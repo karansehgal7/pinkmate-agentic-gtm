@@ -1,0 +1,8 @@
+langchain
+langgraph
+pydantic
+scikit-learn
+pandas
+numpy
+sentence-transformers
+openai
