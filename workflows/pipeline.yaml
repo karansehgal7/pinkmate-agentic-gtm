@@ -1,0 +1,14 @@
+# TODO: Define PinkMate GTM pipeline orchestration.
+# Example skeleton:
+version: "0.1"
+pipeline:
+  - step: ingestion
+    agent: IngestionAgent
+  - step: enrichment
+    agent: EnrichmentAgent
+  - step: scoring
+    agent: ScoringAgent
+  - step: segmentation
+    agent: SegmentationAgent
+  - step: outreach
+    agent: OutreachAgent
