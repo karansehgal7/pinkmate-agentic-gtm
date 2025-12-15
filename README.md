@@ -134,6 +134,9 @@ Planned enhancements include:
 
 ## 6. Links & References
 
+Product landing page (primary):   https://www.pink-mate.co.uk
+  Deployment mirror:   https://v0-pink-mate.vercel.app/ (fallback access if DNS propagation/caching delays access)
+
 PinkMate public MVP (Notion – concept & UI):
 https://iodized-lily-573.notion.site/Hero-Section-205a5e7da1508078b018e8babfa60c61?pvs=143
 
