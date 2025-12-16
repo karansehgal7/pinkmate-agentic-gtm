@@ -3,6 +3,8 @@
 PinkMate is an AI-native, agentic GTM engine that transforms raw lead lists into scored, segmented and outreach-ready pipeline. It combines classical ML models with multi-agent orchestration (via LangChain / LangGraph) to automate enrichment, predictive lead scoring, ICP segmentation and agentic outreach workflows.
 
 > This repository documents the technical architecture, agent stack and early implementation skeleton for PinkMate's predictive GTM engine.
+> License: Proprietary — source available for evaluation only. See LICENSE file for details.
+
 
 ---
 
