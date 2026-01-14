@@ -93,7 +93,7 @@ The agents are orchestrated via a LangChain / LangGraph-style workflow, enabling
 
 ---
 
-## 4. Technical Performance & Benchmarking (January 2026 Update)
+## 4. Technical Performance & Benchmarking (Changelog v1.2 — Jan 2026)
 
 ### Bridging the "Data Integrity Gap": From MSc Research to Agentic Logic
 This framework implements the "Data Robustness" principles developed during my MSc dissertation (University of Kent), specifically addressing the **Data Integrity Gap** in imbalanced datasets. While my academic research focused on SME bankruptcy prediction using **SMOTE (Synthetic Minority Over-sampling Technique)**, PinkMate adapts this logic for **B2B Lead Scoring** where signal-to-noise ratios are notoriously low.
