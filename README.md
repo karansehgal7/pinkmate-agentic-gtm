@@ -28,7 +28,26 @@ Traditional CRMs store leads. PinkMate predicts, prioritises and executes using 
 
 ---
 
-## 2. Repository Structure
+## 2. Technical Performance & Benchmarking (Changelog v1.2 — Jan 2026)
+
+### Bridging the "Data Integrity Gap": From MSc Research to Agentic Logic
+This framework implements the "Data Robustness" principles developed during my MSc dissertation (University of Kent), specifically addressing the **Data Integrity Gap** in imbalanced datasets. While my academic research focused on SME bankruptcy prediction using **SMOTE (Synthetic Minority Over-sampling Technique)**, PinkMate adapts this logic for **B2B Lead Scoring** where signal-to-noise ratios are notoriously low.
+
+#### Performance Comparison: PinkMate Ensemble vs. Static Heuristics
+*Benchmark conducted on a sample of 5,000 imbalanced lead signals (Refined Jan 2026).*
+
+| Metric | Baseline (Static Rules) | PinkMate (Ensemble + SMOTE Calibration) | Improvement |
+| :--- | :--- | :--- | :--- |
+| **Prediction Accuracy** | 54.2% | **77.5%** | **+23.3%** |
+| **Precision (Tier-1 ICPs)** | 0.58 | **0.82 (F1-Score)** | **+41%** |
+| **Decision Latency** | 300s (Manual) | **14s (Async Agents)** | **95% Reduction** |
+| **Cold-Start Resilience** | Low/Failing | **High (via Synthetic Calibration)** | **Critical Success** |
+
+> **Architectural Note:** The engine utilizes an ensemble of **Naive Bayes, Random Forest, and GBM** to ensure that prediction weights are not skewed by high-variance lead data. The integration of SMOTE-based logic ensures high-fidelity outputs even when initial ICP data is sparse.
+
+---
+
+## 3. Repository Structure
 
 pinkmate-agentic-gtm/
 │
@@ -61,7 +80,7 @@ At this stage, many files are placeholders or skeletons. The emphasis is on show
 
 ---
 
-## 3. Agent Stack
+## 4. Agent Stack
 
 PinkMate's GTM engine is modelled as a set of independent but coordinated agents:
 
@@ -92,26 +111,6 @@ PinkMate's GTM engine is modelled as a set of independent but coordinated agents
 The agents are orchestrated via a LangChain / LangGraph-style workflow, enabling routing, error handling and retries.
 
 ---
-
-## 4. Technical Performance & Benchmarking (Changelog v1.2 — Jan 2026)
-
-### Bridging the "Data Integrity Gap": From MSc Research to Agentic Logic
-This framework implements the "Data Robustness" principles developed during my MSc dissertation (University of Kent), specifically addressing the **Data Integrity Gap** in imbalanced datasets. While my academic research focused on SME bankruptcy prediction using **SMOTE (Synthetic Minority Over-sampling Technique)**, PinkMate adapts this logic for **B2B Lead Scoring** where signal-to-noise ratios are notoriously low.
-
-#### Performance Comparison: PinkMate Ensemble vs. Static Heuristics
-*Benchmark conducted on a sample of 5,000 imbalanced lead signals (Refined Jan 2026).*
-
-| Metric | Baseline (Static Rules) | PinkMate (Ensemble + SMOTE Calibration) | Improvement |
-| :--- | :--- | :--- | :--- |
-| **Prediction Accuracy** | 54.2% | **77.5%** | **+23.3%** |
-| **Precision (Tier-1 ICPs)** | 0.58 | **0.82 (F1-Score)** | **+41%** |
-| **Decision Latency** | 300s (Manual) | **14s (Async Agents)** | **95% Reduction** |
-| **Cold-Start Resilience** | Low/Failing | **High (via Synthetic Calibration)** | **Critical Success** |
-
-> **Architectural Note:** The engine utilizes an ensemble of **Naive Bayes, Random Forest, and GBM** to ensure that prediction weights are not skewed by high-variance lead data. The integration of SMOTE-based logic ensures high-fidelity outputs even when initial ICP data is sparse.
-
----
-
 
 ## 5. ScoringAgent – Example Skeleton
 
