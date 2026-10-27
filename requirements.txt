@@ -1,8 +1,9 @@
 langchain
 langgraph
-pydantic
+pydantic>=2.0
 scikit-learn
 pandas
 numpy
 sentence-transformers
 openai
+pytest

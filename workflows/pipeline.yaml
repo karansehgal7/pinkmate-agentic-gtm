@@ -1,5 +1,17 @@
-# TODO: Define PinkMate GTM pipeline orchestration.
-# Example skeleton:
+# DEPRECATED (Slice 1, 2026-10-25).
+#
+# This YAML list predates the Q-MDP paper's §III.B deterministic
+# event-driven orchestration graph. It is retained for commit-history
+# continuity only. The authoritative orchestration layer is now:
+#
+#     workflows/pipeline.py
+#
+# which implements the paper's G = (V, E) graph with a conditional
+# governance-commit edge after the scoring node (§III.A).
+#
+# This file will be removed in a subsequent slice once sufficient
+# commit history is in place to show the migration path.
+
 version: "0.1"
 pipeline:
   - step: ingestion

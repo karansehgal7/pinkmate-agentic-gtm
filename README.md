@@ -24,13 +24,11 @@ PinkMate is an early-stage research and engineering project exploring determinis
 
 ## 2. Engineering Positioning
 
-The intellectual direction of PinkMate connects to ongoing research into **deterministic, governance-aware orchestration for agentic AI systems** — a thesis pursued in parallel through academic peer-reviewed work co-authored with the University of Kent.
+PinkMate is the **reference deployment of the Q-MDP orchestration framework** named in the paper's final section. The architectural choices here — bounded agent responsibilities, superposition-aware belief state, governance-gated conditional transitions, interpretable classical ML for scoring, and explainability-oriented design — directly instantiate the formal constructs of:
 
-Specifically, the architectural choices here — bounded agent responsibilities, explicit state transitions, interpretable classical ML for scoring, and explainability-oriented design — anticipate integration with the **Q-MDP** (superposition-aware Markov Decision Process) formulation described in:
+> Sehgal, K., & Bhatti, K. N. (2026). *Q-MDP: Superposition-Aware State Orchestration for Deterministic Governance of Agentic Systems in Regulated Financial and ESG Infrastructure.* **Accepted at IEEE Cyber-AI 2026**, Bucharest, Romania. Submission #4554.
 
-> Sehgal, K. and Bhatti, K. N. (2026). *Q-MDP: Superposition-Aware State Orchestration for Deterministic Governance of Agentic Systems in Regulated Financial and ESG Infrastructure.* IEEE Cyber-AI 2026 (under peer review).
-
-This repository is the **practical scaffolding** that the broader research thesis will be instantiated against once the trained-model artefacts and end-to-end LangGraph workflows are built out.
+A full paper-to-code map is in [`docs/architecture.md`](./docs/architecture.md). The repository is now in active build against that map on a weekly slice cadence.
 
 ---
 
@@ -40,24 +38,37 @@ This repository is the **practical scaffolding** that the broader research thesi
 pinkmate-agentic-gtm/
 │
 ├─ README.md                  # This file – high-level overview
-├─ requirements.txt           # Python dependencies (placeholder)
+├─ requirements.txt           # Python dependencies
 │
-├─ agents/                    # Individual agent skeletons in the GTM pipeline
+├─ pinkmate/                  # Q-MDP formal constructs (Slice 1)
 │   ├─ __init__.py
-│   ├─ ingestion_agent.py     # Ingest CSV / LinkedIn / Apollo data
-│   ├─ enrichment_agent.py    # Enrich company + persona signals
-│   ├─ scoring_agent.py       # Predictive ML scoring (skeleton; placeholder logic)
-│   ├─ segmentation_agent.py  # Tiering, ICP buckets & readiness
-│   └─ outreach_agent.py      # Next-best-action decisions
+│   ├─ qmdp.py                # BeliefState, SuperposedBelief, transition(),
+│   │                         # governance_commit() — paper §III.A
+│   └─ state.py               # Pydantic PipelineState, TraceEntry — paper §III.A τ_exec
+│
+├─ agents/                    # Orchestration-graph vertices (paper §III.B)
+│   ├─ __init__.py
+│   ├─ ingestion_agent.py
+│   ├─ enrichment_agent.py
+│   ├─ scoring_agent.py       # Emits SuperposedBelief; placeholder predictor
+│   │                         # until Slice 2 wires the real six-model ensemble
+│   ├─ segmentation_agent.py
+│   └─ outreach_agent.py
 │
 ├─ workflows/                 # Orchestrated workflows and routing
-│   └─ pipeline.yaml          # Declarative pipeline definition
+│   ├─ pipeline.py            # LangGraph StateGraph with governance-gated edge
+│   │                         # (Slice 1 — authoritative orchestration layer)
+│   └─ pipeline.yaml          # DEPRECATED; retained for commit-history continuity
 │
-└─ docs/                      # Additional technical documentation
-    └─ architecture.md        # Detailed architecture notes
+├─ tests/                     # Reproducibility + determinism tests
+│   ├─ test_qmdp.py           # Unit tests on belief / commit / transition
+│   └─ test_pipeline.py       # Integration + deterministic-replay smoke tests
+│
+└─ docs/                      # Technical documentation
+    └─ architecture.md        # Paper ↔ code map, slice roadmap
 ```
 
-**Status note.** At this stage, many files are intentional skeletons. The `scoring_agent.py` in particular contains placeholder return values (clearly marked in code with `TODO` and `# Placeholder` comments) so the agent's interface contract can be inspected before the model-loading logic is finalised. The repository's purpose at this point is to document the **engineering design and agentic architecture**, not to provide a production-ready or benchmark-validated system.
+**Slice 1 status.** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are **live** and executable end-to-end on a mock lead with `python -m workflows.pipeline`. The ScoringAgent predictor remains a deterministic placeholder in Slice 1 so the Q-MDP orchestration layer can be verified independently; the real six-model ensemble + SMOTE + TreeSHAP wiring lands in Slice 2.
 
 ---
 
@@ -108,25 +119,29 @@ The current implementation contains explicit placeholder return values (e.g. `nb
 
 ---
 
-## 6. Roadmap
+## 6. Roadmap — Slice Cadence
 
-Planned next stages of development:
+PinkMate is being built against the paper on a weekly slice cadence. Each slice closes a specific gap between the paper's formal claims and the reference deployment.
 
-- **Real model artefacts** — train Naive Bayes, Random Forest, and Gradient Boosting on a public B2B / lead-scoring dataset and commit the artefacts to `models/`.
-- **End-to-end LangGraph workflow** — replace the YAML pipeline scaffolding with an executable LangGraph state machine wiring the five agents.
-- **Real benchmark harness** — instrument latency, replay consistency, audit-trace size, and explainability stability against a baseline heuristic orchestration loop. Numbers will be reported only when measured.
-- **SHAP integration** — wire TreeSHAP-based attribution stability monitoring into the ScoringAgent for governance-oriented inspection.
-- **Integration surface** — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.
+- **Slice 1 (shipped).** Q-MDP formal structure wired into LangGraph with deterministic-replay smoke tests. `pinkmate/qmdp.py`, `pinkmate/state.py`, `workflows/pipeline.py`, test harness, paper-to-code map in `docs/architecture.md`.
+- **Slice 2.** Real ML layer per paper §III.C–D and §V — six-model ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost), SMOTE on training partition only, TreeSHAP attribution with σ_SHAP measurement harness, replacing the Slice 1 placeholder predictor in `ScoringAgent`.
+- **Slice 3.** Durable checkpointing per paper §III.B replay-fidelity claim — `MemorySaver` → `SqliteSaver` → PostgreSQL checkpointer for cross-process audit-trail persistence.
+- **Slice 4.** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion deployment's measurement.
+- **Later.** Integration surface — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.
+
+Numbers will be reported only once measured against the slices that produce them.
 
 ---
 
 ## 7. Related Research
 
-The architectural and research thesis underlying PinkMate is developed in academic collaboration with Kent Business School, University of Kent. Related and ongoing peer-reviewed work:
+The architectural and research thesis underlying PinkMate is developed in academic collaboration with Kent Business School, University of Kent. Peer-reviewed work:
 
-- Sehgal, K., & Bhatti, K. N. (2026). *Q-MDP: Superposition-Aware State Orchestration for Deterministic Governance of Agentic Systems in Regulated Financial and ESG Infrastructure.* Submitted to IEEE Cyber-AI 2026 (under peer review; decision expected July 2026).
-- Sehgal, K., & Bhatti, K. N. (2026). *Comparative Evaluation of Machine Learning Approaches for Minority-Class Financial Distress Prediction Under Class Imbalance Constraints.* arXiv:2605.14067 [cs.LG]. https://arxiv.org/abs/2605.14067
-- Sehgal, K., & Bhatti, K. N. (2026). *Auditable Climate Risk Intelligence from Fragmented ESG Data: Deterministic Orchestration and Imbalance-Aware Learning for Scope 1–3 Validation.* arXiv preprint (under moderation review).
+- Sehgal, K., & Bhatti, K. N. (2026). *Q-MDP: Superposition-Aware State Orchestration for Deterministic Governance of Agentic Systems in Regulated Financial and ESG Infrastructure.* **Accepted** at IEEE Cyber-AI 2026, Bucharest, Romania. Submission #4554 (accepted 18 June 2026).
+- Sehgal, K., & Bhatti, K. N. (2026). *Comparative Evaluation of Machine Learning Approaches for Minority-Class Financial Distress Prediction Under Class Imbalance Constraints.* arXiv:2605.14067 [cs.LG]. https://arxiv.org/abs/2605.14067. Reproducibility artefact on Zenodo: https://doi.org/10.5281/zenodo.20454212 (CC BY 4.0).
+- Sehgal, K., & Bhatti, K. N. (2026). *Auditable Climate Risk Intelligence from Fragmented ESG Data: Deterministic Orchestration and Imbalance-Aware Learning for Scope 1–3 Validation.* arXiv:2606.02604 [cs.LG]. https://arxiv.org/abs/2606.02604. Companion artefact on Zenodo: https://doi.org/10.5281/zenodo.20453252 (CC BY 4.0, OpenAIRE-indexed).
+
+An extended methodological manuscript, *A Reproducibility Protocol for Imbalance-Aware Financial Distress Prediction*, is currently with *Intelligent Computing* (AAAS Science Partner Journal with Zhejiang Lab; IF 4.4, Q1) following editorial invitation.
 
 ---
 
