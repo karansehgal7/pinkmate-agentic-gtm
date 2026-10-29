@@ -6,4 +6,15 @@ pandas
 numpy
 sentence-transformers
 openai
+
+# Slice 2 — Imbalance-aware ML layer + TreeSHAP attribution stability
+xgboost<3
+lightgbm
+catboost
+shap
+imbalanced-learn
+requests
+ucimlrepo
+
+# Testing
 pytest

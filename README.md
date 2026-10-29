@@ -40,18 +40,26 @@ pinkmate-agentic-gtm/
 ├─ README.md                  # This file – high-level overview
 ├─ requirements.txt           # Python dependencies
 │
-├─ pinkmate/                  # Q-MDP formal constructs (Slice 1)
+├─ pinkmate/                  # Core package
 │   ├─ __init__.py
-│   ├─ qmdp.py                # BeliefState, SuperposedBelief, transition(),
-│   │                         # governance_commit() — paper §III.A
-│   └─ state.py               # Pydantic PipelineState, TraceEntry — paper §III.A τ_exec
+│   ├─ qmdp.py                # Belief state, superposed belief, governance
+│   │                         # commit predicate (paper §III.A) — Slice 1
+│   ├─ state.py               # Pydantic PipelineState + τ_exec trace (§III.A) — Slice 1
+│   └─ ml/                    # Imbalance-aware ML layer (Slice 2)
+│       ├─ __init__.py
+│       ├─ dataset.py         # Taiwan Bankruptcy UCI 572 loader (§VI.A, §VIII)
+│       ├─ imbalance.py       # SMOTE wrapper (§III.C)
+│       ├─ model_zoo.py       # Six-model ensemble (§III.D)
+│       ├─ attribution.py     # TreeSHAP + σ_SHAP (§V)
+│       └─ pipeline.py        # End-to-end training + measurement runner
 │
 ├─ agents/                    # Orchestration-graph vertices (paper §III.B)
 │   ├─ __init__.py
 │   ├─ ingestion_agent.py
 │   ├─ enrichment_agent.py
-│   ├─ scoring_agent.py       # Emits SuperposedBelief; placeholder predictor
-│   │                         # until Slice 2 wires the real six-model ensemble
+│   ├─ scoring_agent.py       # Loads real six-model ensemble from models/
+│   │                         # if present; falls back to Slice 1 placeholder
+│   │                         # predictor with a RuntimeWarning if not.
 │   ├─ segmentation_agent.py
 │   └─ outreach_agent.py
 │
@@ -60,15 +68,25 @@ pinkmate-agentic-gtm/
 │   │                         # (Slice 1 — authoritative orchestration layer)
 │   └─ pipeline.yaml          # DEPRECATED; retained for commit-history continuity
 │
+├─ scripts/                   # Standalone reproduction scripts
+│   └─ reproduce_table2.py    # Reproduces paper Table I + Table II from UCI 572
+│
 ├─ tests/                     # Reproducibility + determinism tests
-│   ├─ test_qmdp.py           # Unit tests on belief / commit / transition
-│   └─ test_pipeline.py       # Integration + deterministic-replay smoke tests
+│   ├─ test_qmdp.py                 # Slice 1 — Q-MDP primitives
+│   ├─ test_pipeline.py             # Slice 1 — LangGraph integration + replay
+│   ├─ test_imbalance.py            # Slice 2 — SMOTE
+│   ├─ test_attribution.py          # Slice 2 — σ_SHAP
+│   ├─ test_model_zoo.py            # Slice 2 — six-model ensemble
+│   ├─ test_dataset.py              # Slice 2 — Taiwan loader + preprocessing
+│   └─ test_slice2_integration.py   # Slice 2 — full pipeline + §VI.C findings
 │
 └─ docs/                      # Technical documentation
     └─ architecture.md        # Paper ↔ code map, slice roadmap
 ```
 
-**Slice 1 status.** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are **live** and executable end-to-end on a mock lead with `python -m workflows.pipeline`. The ScoringAgent predictor remains a deterministic placeholder in Slice 1 so the Q-MDP orchestration layer can be verified independently; the real six-model ensemble + SMOTE + TreeSHAP wiring lands in Slice 2.
+**Slice 1 status (shipped).** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are live and executable end-to-end on a mock lead with `python -m workflows.pipeline`.
+
+**Slice 2 status (shipped).** The imbalance-aware ML layer is live: six-model ensemble, SMOTE, TreeSHAP σ_SHAP measurement harness, and a reproduction script (`scripts/reproduce_table2.py`) that reproduces the paper's Table I and Table II against the real UCI 572 dataset with tolerance-based assertions (σ_SHAP ±0.005, recall ±0.03). The ScoringAgent now runs the real six-model ensemble when `models/` is populated, and falls back transparently to the Slice 1 deterministic placeholder predictor (with a `RuntimeWarning`) when models are not yet trained.
 
 ---
 
@@ -124,7 +142,7 @@ The current implementation contains explicit placeholder return values (e.g. `nb
 PinkMate is being built against the paper on a weekly slice cadence. Each slice closes a specific gap between the paper's formal claims and the reference deployment.
 
 - **Slice 1 (shipped).** Q-MDP formal structure wired into LangGraph with deterministic-replay smoke tests. `pinkmate/qmdp.py`, `pinkmate/state.py`, `workflows/pipeline.py`, test harness, paper-to-code map in `docs/architecture.md`.
-- **Slice 2.** Real ML layer per paper §III.C–D and §V — six-model ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost), SMOTE on training partition only, TreeSHAP attribution with σ_SHAP measurement harness, replacing the Slice 1 placeholder predictor in `ScoringAgent`.
+- **Slice 2 (shipped).** Imbalance-aware ML layer per paper §III.C–D and §V — six-model ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost), SMOTE on training partition only, TreeSHAP attribution with σ_SHAP measurement harness. `scripts/reproduce_table2.py` reproduces Table I and Table II against UCI 572 with tolerance-based assertions. `ScoringAgent` now runs real pickled models when present, with a transparent fallback to the Slice 1 placeholder.
 - **Slice 3.** Durable checkpointing per paper §III.B replay-fidelity claim — `MemorySaver` → `SqliteSaver` → PostgreSQL checkpointer for cross-process audit-trail persistence.
 - **Slice 4.** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion deployment's measurement.
 - **Later.** Integration surface — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.

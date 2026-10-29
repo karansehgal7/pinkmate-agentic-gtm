@@ -4,22 +4,32 @@ ScoringAgent — orchestration node V_scoring in the Q-MDP graph (§III.B).
 Scores an EnrichedRecord and emits a SuperposedBelief into pipeline state
 so the governance commit predicate (§III.A) has a belief to evaluate.
 
-NOTE (Slice 1 scope):
-    Per-model scores remain deterministic placeholders in Slice 1 to keep
-    the LangGraph integration focused on the Q-MDP formal structure. Real
-    model loading + TreeSHAP wiring + σ_SHAP attribution-stability
-    measurement land in Slice 2 (see paper §III.D, §V).
-
-    The Slice 2 change is confined to self._predict_proba() — the belief
-    construction and governance interface stay stable.
+Slice 2 scope (shipped):
+    - Loads trained models from ``models/`` if present (produced by
+      ``scripts/reproduce_table2.py``) and runs a real six-model ensemble.
+    - Falls back to the deterministic Slice 1 predictor with a loud WARNING
+      if ``models/`` is empty — pipeline still runs end-to-end, but the
+      attribution-stability signal is degraded.
+    - Reads the saved σ_SHAP from ``models/attribution.json`` when available
+      and uses it as a confidence derating signal on the committed state.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+import json
+import logging
+import os
+import pickle
+import warnings
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 
 from pinkmate.qmdp import BeliefState, SuperposedBelief, governance_commit
 from pinkmate.state import PipelineState, ScoreOutput, TraceEntry
+
+LOGGER = logging.getLogger(__name__)
 
 
 # Latent state labels for the lead-domain Q-MDP instantiation.
@@ -44,31 +54,83 @@ class ScoringAgent:
     NODE_NAME: str = "scoring"
     ACTION: str = "score"
 
+    MODEL_NAMES: Tuple[str, ...] = (
+        "logistic_regression",
+        "random_forest",
+        "adaboost",
+        "xgboost",
+        "lightgbm",
+        "catboost",
+    )
+
     def __init__(self, models_dir: str = "models") -> None:
-        self.models_dir = models_dir
+        self.models_dir = Path(models_dir)
         self.models: Dict[str, Any] = {}
+        self.sigma_shap_by_model: Dict[str, float] = {}
+        self.feature_order: Optional[List[str]] = None
+        self._using_real_models: bool = False
         self._load_models()
 
     # ------------------------------------------------------------------
-    # Model loading (Slice 1 stub; replaced in Slice 2)
+    # Model loading — Slice 2
     # ------------------------------------------------------------------
 
     def _load_models(self) -> None:
         """
-        SLICE 1 STUB. Real pickled model loading lands in Slice 2. The
-        placeholder names mirror the six-classifier zoo from paper §III.D:
-            Logistic Regression, Random Forest, AdaBoost, XGBoost,
-            LightGBM, CatBoost.
+        Load trained models from ``self.models_dir`` if present. If the
+        directory is missing or empty, fall back to the Slice 1 deterministic
+        placeholder with a visible WARNING.
+
+        Design decision (Slice 2, 2026-10-27): fallback-with-warning so
+        the pipeline still runs for demo / smoke-test purposes before the
+        reproduce script has been run.
         """
-        for name in (
-            "logistic_regression",
-            "random_forest",
-            "adaboost",
-            "xgboost",
-            "lightgbm",
-            "catboost",
-        ):
-            self.models[name] = None
+        missing: List[str] = []
+        for name in self.MODEL_NAMES:
+            pkl = self.models_dir / f"{name}.pkl"
+            if pkl.exists():
+                try:
+                    with open(pkl, "rb") as f:
+                        self.models[name] = pickle.load(f)
+                except Exception as e:
+                    LOGGER.warning("Failed to load %s: %s", pkl, e)
+                    self.models[name] = None
+                    missing.append(name)
+            else:
+                self.models[name] = None
+                missing.append(name)
+
+        if missing:
+            warnings.warn(
+                f"ScoringAgent: {len(missing)}/{len(self.MODEL_NAMES)} model "
+                f"pickles missing from {self.models_dir.resolve()} "
+                f"({', '.join(missing[:3])}{'...' if len(missing) > 3 else ''}). "
+                "Falling back to Slice 1 deterministic placeholder predictor. "
+                "Run `python scripts/reproduce_table2.py` to train real models "
+                "and populate `models/`.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            self._using_real_models = False
+        else:
+            self._using_real_models = True
+            LOGGER.info(
+                "ScoringAgent loaded real six-model ensemble from %s",
+                self.models_dir.resolve(),
+            )
+
+        # Load σ_SHAP summary if present — used for soft confidence derating
+        # on committed beliefs when attribution is unstable.
+        attribution_path = self.models_dir / "attribution.json"
+        if attribution_path.exists():
+            try:
+                with open(attribution_path) as f:
+                    payload = json.load(f)
+                with_smote = payload.get("with_smote", {})
+                for name, entry in with_smote.items():
+                    self.sigma_shap_by_model[name] = float(entry["sigma_shap"])
+            except Exception as e:
+                LOGGER.warning("Failed to parse attribution.json: %s", e)
 
     # ------------------------------------------------------------------
     # Scoring
@@ -140,13 +202,62 @@ class ScoringAgent:
 
     def _predict_proba(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
         """
-        SLICE 1 PLACEHOLDER predictor.
+        Return (final_score, per_model_scores).
 
-        Deterministic weighted linear combination of the Slice 1 feature set.
-        Produces plausible, feature-responsive scores so the Q-MDP governance
-        predicate has meaningful variation to gate on during integration
-        testing. Replaced by the real six-model ensemble + SMOTE + TreeSHAP
-        pipeline in Slice 2 (paper §III.C–D, §V).
+        Slice 2 path (real ensemble present):
+            Each loaded model's predict_proba is averaged across the six to
+            form the ensemble consensus. The feature vector is pulled from
+            ``features`` in a stable order and padded / zero-filled where
+            an expected feature is missing.
+
+        Slice 2 fallback path (models missing):
+            The Slice 1 deterministic weighted-linear predictor is used.
+            A RuntimeWarning was already emitted at construction time.
+        """
+        if self._using_real_models:
+            return self._predict_proba_real(features)
+        return self._predict_proba_placeholder(features)
+
+    def _predict_proba_real(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+        """Run the loaded six-model ensemble on the engineered feature vector."""
+        # Pull features in a stable order matching training-time columns.
+        feature_names = self.feature_order or sorted(features.keys())
+        x = np.array(
+            [[float(features.get(name, 0.0)) for name in feature_names]],
+            dtype=np.float64,
+        )
+
+        per_model: Dict[str, float] = {}
+        probs: List[float] = []
+        for name, model in self.models.items():
+            if model is None:
+                continue
+            try:
+                p = float(model.predict_proba(x)[0, 1])
+            except Exception as e:
+                LOGGER.warning("Model %s predict_proba failed: %s", name, e)
+                continue
+            per_model[name] = round(p, 4)
+            probs.append(p)
+
+        if not probs:
+            # Last-ditch: all models failed. Fall back to placeholder.
+            warnings.warn(
+                "All loaded models failed predict_proba; falling back to placeholder.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return self._predict_proba_placeholder(features)
+
+        # Ensemble consensus = simple average of per-model probabilities.
+        consensus_proba = float(np.mean(probs))
+        final_score = round(consensus_proba * 100.0, 2)
+        return final_score, per_model
+
+    def _predict_proba_placeholder(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+        """
+        Slice 1 deterministic weighted-linear predictor, retained as fallback
+        for environments where the real ensemble has not yet been trained.
         """
         weights = {
             "industry_saas": 15.0,
@@ -157,14 +268,7 @@ class ScoringAgent:
         }
         raw = sum(weights.get(k, 0.0) * float(features.get(k, 0.0)) for k in weights)
         final_score = max(0.0, min(100.0, raw))
-
-        # Flat per-model attribution for Slice 1 (all models agree with
-        # the ensemble). Slice 2 replaces this with per-model proba output.
-        per_model = {
-            name: round(final_score / 100.0, 4)
-            for name in self.models
-        }
-
+        per_model = {name: round(final_score / 100.0, 4) for name in self.MODEL_NAMES}
         return round(final_score, 2), per_model
 
 

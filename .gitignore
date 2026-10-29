@@ -37,6 +37,9 @@ models/
 *.pkl
 *.joblib
 
+# Slice 2 dataset cache
+data/
+
 # Local checkpoint stores
 *.sqlite
 *.sqlite3

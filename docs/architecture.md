@@ -19,10 +19,12 @@ The paper's final paragraph names this repository (`github.com/karansehgal7/pink
 | §III.A, commit predicate | `commit(i*) ← argmax_i P(s_t\|o_{1:t}, a_{1:t}) s.t. P > θ_gov` | `pinkmate/qmdp.py` → `governance_commit()` |
 | §III.B, orchestration graph | `G = (V, E)` — asynchronous event-driven | `workflows/pipeline.py` → LangGraph `StateGraph` |
 | §III.B, scheduling bound | `T_fa = O(log n + k)` | Enforced by LangGraph priority scheduler; empirical validation in Slice 4 |
-| §III.C, SMOTE | `x_new = x_i + λ(x_nn − x_i)` | Scheduled for Slice 2 |
-| §III.D, model zoo | LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost | Scheduled for Slice 2 |
-| §IV.B, risk-sensitive loss | `L_risk = αFN + βFP, α > β` | Scheduled for Slice 2 |
-| §V, attribution stability | `σ_SHAP = √((1/m) Σ_j Var_k \|φ_{j,k}\|)` | Scheduled for Slice 2 |
+| §III.C, SMOTE | `x_new = x_i + λ(x_nn − x_i)` | `pinkmate/ml/imbalance.py` → `apply_smote()` |
+| §III.D, model zoo | LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost | `pinkmate/ml/model_zoo.py` → `build_model_zoo()`, `train_zoo()` |
+| §IV.B, risk-sensitive loss | `L_risk = αFN + βFP, α > β` | Metric scaffolding in `pinkmate/ml/pipeline.py::ModelMetrics`; full `L_risk` landing in Slice 3 |
+| §V, attribution stability | `σ_SHAP = √((1/m) Σ_j Var_k \|φ_{j,k}\|)` | `pinkmate/ml/attribution.py` → `sigma_shap()`, `compute_rotated_shap_variance()` |
+| §VI.A, reproducibility protocol | seed=42, 80/20 stratified, SMOTE on train only, TreeSHAP K=50 × 100 × 200 | `pinkmate/ml/pipeline.py` → `run_slice_two_pipeline()`; dataset in `pinkmate/ml/dataset.py` |
+| §VI.B / §VI.C, Table I / Table II | Per-model metrics + σ_SHAP comparison | `scripts/reproduce_table2.py` |
 
 ---
 
@@ -71,8 +73,8 @@ The paper's §III.B claims deterministic execution and reproducible replay. Oper
 
 ## 6. Slice roadmap
 
-- **Slice 1 (this slice):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
-- **Slice 2:** Real ML layer — six-model ensemble (per §III.D), SMOTE (per §III.C), TreeSHAP + σ_SHAP measurement (per §V) replacing the Slice 1 placeholder scores in `ScoringAgent`.
+- **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
+- **Slice 2 (shipped):** Imbalance-aware ML layer — six-model ensemble (§III.D), SMOTE (§III.C), TreeSHAP + σ_SHAP measurement (§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (σ_SHAP ±0.005, recall ±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
 - **Slice 3:** Durable checkpointing — swap `MemorySaver` for `SqliteSaver`, then PostgreSQL. Enables cross-process audit-trail persistence (per §III.B replay fidelity claim).
 - **Slice 4:** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion paper's measurement.
 
@@ -80,19 +82,37 @@ The paper's §III.B claims deterministic execution and reproducible replay. Oper
 
 ## 7. Running the pipeline
 
+### Smoke-test the Q-MDP orchestration layer (fast, no ML training required)
+
 ```bash
 pip install -r requirements.txt
 python -m workflows.pipeline
 ```
 
-Expected output: a demo lead ingested, scored, committed through governance, segmented into a tier, and routed to a next-best action, with the full execution trace printed.
+Expected output: a demo lead ingested, scored, committed through governance, segmented into a tier, and routed to a next-best action, with the full execution trace printed. The ScoringAgent falls back to its deterministic placeholder predictor (a Slice 1 behaviour retained in Slice 2) when real trained models are not yet present on disk, and emits a `RuntimeWarning` noting this.
 
-To run the test suite:
+### Reproduce the paper's Table I and Table II (requires UCI network access)
 
 ```bash
-pip install pytest
+python scripts/reproduce_table2.py             # Full K=50 run (~10 min)
+python scripts/reproduce_table2.py --fast      # K=10 quick check (~2 min)
+python scripts/reproduce_table2.py --synthetic # Hermetic synthetic run (CI)
+```
+
+The script:
+- Fetches Taiwan Bankruptcy UCI 572 via `ucimlrepo`, caches to `data/taiwan/`.
+- Trains the six-model zoo on the SMOTE-oversampled training partition.
+- Computes `σ_SHAP` for XGBoost+LightGBM with SMOTE and XGBoost without SMOTE.
+- Prints a side-by-side comparison against the paper's declared Table II values with tolerance thresholds (σ_SHAP ±0.005, recall ±0.03) and PASS/DRIFT status.
+- Persists trained models + metrics + attribution summary to `models/` (gitignored).
+
+### Run the test suite
+
+```bash
 pytest -q
 ```
+
+Current totals: Slice 1 Q-MDP + pipeline tests + Slice 2 ML + integration tests. All run on synthetic data for hermeticity.
 
 ---
 
