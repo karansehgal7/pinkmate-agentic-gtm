@@ -103,16 +103,30 @@ def run_full_benchmarks(
 
     # Phase 1 — original "process": write checkpoints to disk.
     original_checkpointer = make_checkpointer(backend="sqlite", path=sqlite_path)
-    original_app = build_pipeline(checkpointer=original_checkpointer)
-    for tid in thread_ids:
-        final = original_app.invoke(_mk_lead(tid), config=thread_config(tid))
-        if isinstance(final, dict):
-            final = PipelineState.model_validate(final)
-        reference_states[tid] = final
+    try:
+        original_app = build_pipeline(checkpointer=original_checkpointer)
+        for tid in thread_ids:
+            final = original_app.invoke(_mk_lead(tid), config=thread_config(tid))
+            if isinstance(final, dict):
+                final = PipelineState.model_validate(final)
+            reference_states[tid] = final
+    finally:
+        # Explicitly close the SqliteSaver connection — on Windows an open
+        # sqlite3.Connection locks the file against deletion ([WinError 32]),
+        # which breaks the tempfile.TemporaryDirectory cleanup in main().
+        # On POSIX this is a safe no-op; the OS handles unlinks on open
+        # files gracefully.
+        try:
+            if hasattr(original_checkpointer, "conn"):
+                original_checkpointer.conn.close()
+        except Exception:
+            pass
     del original_app
-    del original_checkpointer  # close the connection — simulates process end
+    del original_checkpointer
 
     # Phase 2 — fresh "process": fidelity checker opens a new checkpointer.
+    # Each run_replay_fidelity_check() opens its own SqliteSaver and closes
+    # it in a `finally` block, so no additional cleanup is needed here.
     reports: List[FidelityReport] = []
     for tid in thread_ids:
         report = run_replay_fidelity_check(

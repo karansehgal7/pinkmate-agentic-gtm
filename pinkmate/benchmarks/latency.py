@@ -289,16 +289,34 @@ def measure_pipeline_latency(
         raise ValueError(f"warmup_runs must be >= 0, got {warmup_runs}")
 
     app = build_chain_graph(n)
-    config = {"configurable": {"thread_id": f"bench-n{n}"}}
+
+    # LangGraph's default `recursion_limit` is 25 super-steps. Our chain
+    # of n sequential nodes trips this at n >= 25 (START + ingestion + ...
+    # + END > 25 super-steps). Set the per-invocation recursion limit
+    # generously so the benchmark runs on any LangGraph version
+    # regardless of its default. This value is a config, not a bound —
+    # it does not change what we measure, only the safety ceiling.
+    rec_limit = max(500, n * 4)
+
+    config = {
+        "configurable": {"thread_id": f"bench-n{n}"},
+        "recursion_limit": rec_limit,
+    }
 
     # Warmup — discarded.
     for i in range(warmup_runs):
-        warm_config = {"configurable": {"thread_id": f"bench-warmup-n{n}-{i}"}}
+        warm_config = {
+            "configurable": {"thread_id": f"bench-warmup-n{n}-{i}"},
+            "recursion_limit": rec_limit,
+        }
         app.invoke(_seed_state(), config=warm_config)
 
     samples: List[float] = []
     for i in range(runs):
-        run_config = {"configurable": {"thread_id": f"bench-n{n}-r{i}"}}
+        run_config = {
+            "configurable": {"thread_id": f"bench-n{n}-r{i}"},
+            "recursion_limit": rec_limit,
+        }
         start = time.perf_counter()
         app.invoke(_seed_state(), config=run_config)
         elapsed = time.perf_counter() - start

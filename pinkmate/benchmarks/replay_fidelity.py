@@ -335,45 +335,58 @@ def run_replay_fidelity_check(
         graph_builder = lambda cp: default_builder(checkpointer=cp)
 
     checkpointer = make_checkpointer(backend="sqlite", path=sqlite_path)
-    app = graph_builder(checkpointer)
-    config = thread_config(thread_id)
+    try:
+        app = graph_builder(checkpointer)
+        config = thread_config(thread_id)
 
-    # Recover the full state history (iterator → list for depth count).
-    history = list(app.get_state_history(config))
-    recovered_depth = len(history)
+        # Recover the full state history (iterator → list for depth count).
+        history = list(app.get_state_history(config))
+        recovered_depth = len(history)
 
-    # Reference history depth — the reference's trace length +1 for the
-    # initial pre-execution snapshot is a reasonable proxy. In practice,
-    # LangGraph records a snapshot per super-step plus the terminal one;
-    # we assert recovered_depth >= len(reference.trace) rather than
-    # equality, since LangGraph's internal super-step grouping may bundle
-    # multiple node transitions into one checkpoint.
-    expected_depth = max(len(reference_state.trace), 1)
-    if recovered_depth == 0:
-        completeness = 0.0
-    else:
-        completeness = min(1.0, recovered_depth / expected_depth)
+        # Reference history depth — the reference's trace length +1 for the
+        # initial pre-execution snapshot is a reasonable proxy. In practice,
+        # LangGraph records a snapshot per super-step plus the terminal one;
+        # we assert recovered_depth >= len(reference.trace) rather than
+        # equality, since LangGraph's internal super-step grouping may bundle
+        # multiple node transitions into one checkpoint.
+        expected_depth = max(len(reference_state.trace), 1)
+        if recovered_depth == 0:
+            completeness = 0.0
+        else:
+            completeness = min(1.0, recovered_depth / expected_depth)
 
-    # Recover the current state and compare against the reference.
-    if recovered_depth == 0:
+        # Recover the current state and compare against the reference.
+        if recovered_depth == 0:
+            return FidelityReport(
+                thread_id=thread_id,
+                completeness=0.0,
+                expected_history_depth=expected_depth,
+                recovered_history_depth=0,
+                trace_integrity=False,
+                divergences=tuple(),
+            )
+
+        recovered_state = _snapshot_values_as_state(app.get_state(config))
+        divergences = _compute_divergences(reference_state, recovered_state)
+        trace_ok = _compare_trace_integrity(reference_state, recovered_state)
+
         return FidelityReport(
             thread_id=thread_id,
-            completeness=0.0,
+            completeness=completeness,
             expected_history_depth=expected_depth,
-            recovered_history_depth=0,
-            trace_integrity=False,
-            divergences=tuple(),
+            recovered_history_depth=recovered_depth,
+            trace_integrity=trace_ok,
+            divergences=tuple(divergences),
         )
-
-    recovered_state = _snapshot_values_as_state(app.get_state(config))
-    divergences = _compute_divergences(reference_state, recovered_state)
-    trace_ok = _compare_trace_integrity(reference_state, recovered_state)
-
-    return FidelityReport(
-        thread_id=thread_id,
-        completeness=completeness,
-        expected_history_depth=expected_depth,
-        recovered_history_depth=recovered_depth,
-        trace_integrity=trace_ok,
-        divergences=tuple(divergences),
-    )
+    finally:
+        # Explicitly close the SqliteSaver's underlying connection so
+        # Windows can clean up the on-disk SQLite file. On POSIX the OS
+        # handles unlinks on open files gracefully so this is a no-op;
+        # on Windows an open sqlite3.Connection locks the file against
+        # deletion ([WinError 32]), which breaks tempfile.TemporaryDirectory
+        # cleanup in `scripts/run_benchmarks.py`.
+        try:
+            if hasattr(checkpointer, "conn"):
+                checkpointer.conn.close()
+        except Exception:
+            pass
