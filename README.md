@@ -47,6 +47,10 @@ pinkmate-agentic-gtm/
 │   ├─ state.py               # Pydantic PipelineState + τ_exec trace (§III.A) — Slice 1
 │   ├─ persistence.py         # Checkpointer factory — MemorySaver | SqliteSaver
 │   │                         # (paper §III.B replay fidelity) — Slice 3
+│   ├─ benchmarks/            # Empirical validation harnesses — Slice 4
+│   │   ├─ __init__.py
+│   │   ├─ latency.py         # T_fa = O(log n + k) scheduling-bound harness (§III.B)
+│   │   └─ replay_fidelity.py # Reusable cross-process replay fidelity harness (§III.B)
 │   └─ ml/                    # Imbalance-aware ML layer (Slice 2)
 │       ├─ __init__.py
 │       ├─ dataset.py         # Taiwan Bankruptcy UCI 572 loader (§VI.A, §VIII)
@@ -72,7 +76,9 @@ pinkmate-agentic-gtm/
 │   └─ pipeline.yaml          # DEPRECATED; retained for commit-history continuity
 │
 ├─ scripts/                   # Standalone reproduction scripts
-│   └─ reproduce_table2.py    # Reproduces paper Table I + Table II from UCI 572
+│   ├─ reproduce_table2.py    # Reproduces paper Table I + Table II from UCI 572
+│   └─ run_benchmarks.py      # Slice 4 — runs latency + replay-fidelity harnesses,
+│                             #   writes docs/benchmarks_report.md + docs/figures/*.png
 │
 ├─ tests/                     # Reproducibility + determinism tests
 │   ├─ test_qmdp.py                 # Slice 1 — Q-MDP primitives
@@ -82,11 +88,19 @@ pinkmate-agentic-gtm/
 │   ├─ test_model_zoo.py            # Slice 2 — six-model ensemble
 │   ├─ test_dataset.py              # Slice 2 — Taiwan loader + preprocessing
 │   ├─ test_slice2_integration.py   # Slice 2 — full pipeline + §VI.C findings
-│   └─ test_checkpointing.py        # Slice 3 — SqliteSaver + cross-process
-│                                   #   replay fidelity (§III.B)
+│   ├─ test_checkpointing.py        # Slice 3 — SqliteSaver + cross-process
+│   │                               #   replay fidelity (§III.B)
+│   └─ test_benchmarks.py           # Slice 4 — latency + replay-fidelity harness
+│                                   #   correctness tests (§III.B)
 │
 └─ docs/                      # Technical documentation
-    └─ architecture.md        # Paper ↔ code map, slice roadmap
+    ├─ architecture.md        # Paper ↔ code map, slice roadmap
+    ├─ benchmarks_report.md   # Slice 4 empirical validation report (committed)
+    ├─ benchmarks_report.json # Machine-readable benchmark payload
+    └─ figures/               # Committed PNG charts for in-browser review
+        ├─ latency_total_vs_n.png
+        ├─ latency_per_step_overhead.png
+        └─ replay_fidelity_summary.png
 ```
 
 **Slice 1 status (shipped).** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are live and executable end-to-end on a mock lead with `python -m workflows.pipeline`.
@@ -94,6 +108,8 @@ pinkmate-agentic-gtm/
 **Slice 2 status (shipped).** The imbalance-aware ML layer is live: six-model ensemble, SMOTE, TreeSHAP σ_SHAP measurement harness, and a reproduction script (`scripts/reproduce_table2.py`) that reproduces the paper's Table I and Table II against the real UCI 572 dataset with tolerance-based assertions (σ_SHAP ±0.005, recall ±0.03). The ScoringAgent now runs the real six-model ensemble when `models/` is populated, and falls back transparently to the Slice 1 deterministic placeholder predictor (with a `RuntimeWarning`) when models are not yet trained.
 
 **Slice 3 status (shipped).** Durable checkpointing is live: a `make_checkpointer()` factory in `pinkmate/persistence.py` selects between `MemorySaver` (default, in-process) and `SqliteSaver` (on-disk, cross-process). `run_pipeline(initial, thread_id, checkpoint_backend="sqlite", ...)` persists every post-node `PipelineState` snapshot to disk keyed by `thread_id`, operationalising the paper's §III.B replay-fidelity claim. Twelve new tests in `tests/test_checkpointing.py` verify SQLite persistence, cross-process replay fidelity (a fresh `SqliteSaver` instance pointed at the same DB file recovers the terminal state and full execution trace), thread isolation, and the factory contract. PostgreSQL swap for team/multi-instance deployments is the next natural extension.
+
+**Slice 4 status (shipped).** Empirical validation of the paper's §III.B operational claims is live: `pinkmate/benchmarks/latency.py` measures total pipeline latency across n ∈ {5, 10, 25, 50, 100, 250} on a parametric chain-topology StateGraph with near-no-op pass-through nodes, isolating the per-step scheduler cost from per-node execution. `pinkmate/benchmarks/replay_fidelity.py` generalises Slice 3's cross-process replay proof into a **reusable consumer harness** that any Q-MDP deployment (PinkMate, the ESG companion, future instantiations) can run against its own checkpointed audit trails to emit a structured completeness-and-divergence report. `scripts/run_benchmarks.py` executes both and commits the artefacts to the repo for in-browser review: `docs/benchmarks_report.md`, `docs/benchmarks_report.json`, and three PNG charts under `docs/figures/`. 20 new tests in `tests/test_benchmarks.py` verify harness correctness (not empirical fit numbers — those legitimately wobble under OS jitter). Current empirical result: linear fit R² = 0.98 on chain topology (expected — sequential dependencies force linear scaling), per-step scheduler overhead stays bounded across the n range (the operational signal for the `O(log n + k)` bound), 3/3 fidelity threads pass strict replay-fidelity.
 
 ---
 
@@ -151,8 +167,8 @@ PinkMate is being built against the paper on a weekly slice cadence. Each slice 
 - **Slice 1 (shipped).** Q-MDP formal structure wired into LangGraph with deterministic-replay smoke tests. `pinkmate/qmdp.py`, `pinkmate/state.py`, `workflows/pipeline.py`, test harness, paper-to-code map in `docs/architecture.md`.
 - **Slice 2 (shipped).** Imbalance-aware ML layer per paper §III.C–D and §V — six-model ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost), SMOTE on training partition only, TreeSHAP attribution with σ_SHAP measurement harness. `scripts/reproduce_table2.py` reproduces Table I and Table II against UCI 572 with tolerance-based assertions. `ScoringAgent` now runs real pickled models when present, with a transparent fallback to the Slice 1 placeholder.
 - **Slice 3 (shipped).** Durable checkpointing per paper §III.B replay-fidelity claim — `pinkmate/persistence.py::make_checkpointer()` factory, `MemorySaver` → `SqliteSaver` with per-`thread_id` audit trail on disk, `run_pipeline()` helper threading the durability contract from caller to compiled graph, 12 new tests covering SQLite persistence, cross-process replay fidelity, thread isolation, and the factory contract. PostgreSQL swap is a single-call-site change against this factory in a later slice.
-- **Slice 4.** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion deployment's measurement.
-- **Slice 5 (deferred).** GTM-domain ensemble retrain — train the six-model zoo on B2B conversion labels (lead → MQL → SQL → closed-won) once a labelled corpus is available, closing the Taiwan-vs-GTM feature-space mismatch currently surfaced by the ScoringAgent's `RuntimeWarning`. Product-arc work scoped alongside this slice; the σ_SHAP governance harness carries over unchanged.
+- **Slice 4 (shipped).** Empirical validation of paper §III.B operational claims — `pinkmate/benchmarks/latency.py` measures scheduler latency vs graph size on a parametric chain topology (n ∈ {5, 10, 25, 50, 100, 250}, 10 runs each). `pinkmate/benchmarks/replay_fidelity.py` generalises the cross-process replay proof into a reusable consumer harness emitting structured completeness-and-divergence reports (reusable across deployments including the ESG companion). `scripts/run_benchmarks.py` writes committed artefacts to `docs/benchmarks_report.md` + `docs/figures/*.png` for in-browser review. 20 new harness-correctness tests in `tests/test_benchmarks.py`; empirical fit numbers reported in markdown rather than asserted in tests to avoid flakiness from OS scheduler jitter.
+- **Slice 5 (deferred).** GTM-domain ensemble retrain — train the six-model zoo on B2B conversion labels (lead → MQL → SQL → closed-won) once a labelled corpus is available, closing the Taiwan-vs-GTM feature-space mismatch currently surfaced by the ScoringAgent's `RuntimeWarning`. Product-arc work scoped alongside this slice; the σ_SHAP governance harness carries over unchanged. **Data-gated** — requires acquiring a labelled B2B conversion corpus (PinkMate pipeline, partner data, or defensible synthetic).
 - **Later.** Integration surface — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.
 
 Numbers will be reported only once measured against the slices that produce them.

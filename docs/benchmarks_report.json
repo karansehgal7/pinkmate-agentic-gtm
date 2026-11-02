@@ -1,0 +1,80 @@
+{
+  "generated_utc": "2026-11-02T09:57:53Z",
+  "latency": {
+    "per_node_baseline_ms": 2.1646970000119836,
+    "marginal_per_node_ms": 2.081483134666996,
+    "verdict": "LINEAR CHAIN AS EXPECTED",
+    "linear_fit_r_squared": 0.9822809229360017,
+    "log_linear_fit_r_squared": 0.6631508212466296,
+    "measurements": [
+      {
+        "n": 5,
+        "mean_ms": 6.2806,
+        "stdev_ms": 0.7631,
+        "runs": 10
+      },
+      {
+        "n": 10,
+        "mean_ms": 10.9187,
+        "stdev_ms": 2.8521,
+        "runs": 10
+      },
+      {
+        "n": 25,
+        "mean_ms": 20.3852,
+        "stdev_ms": 3.51,
+        "runs": 10
+      },
+      {
+        "n": 50,
+        "mean_ms": 50.8054,
+        "stdev_ms": 7.7639,
+        "runs": 10
+      },
+      {
+        "n": 100,
+        "mean_ms": 115.8393,
+        "stdev_ms": 16.5475,
+        "runs": 10
+      },
+      {
+        "n": 250,
+        "mean_ms": 428.0618,
+        "stdev_ms": 35.3729,
+        "runs": 10
+      }
+    ]
+  },
+  "replay_fidelity": [
+    {
+      "thread_id": "replay-fidelity-run-1",
+      "completeness": 1.0,
+      "expected_history_depth": 5,
+      "recovered_history_depth": 7,
+      "trace_integrity": true,
+      "divergence_count": 0,
+      "divergences": [],
+      "passed_strict": true
+    },
+    {
+      "thread_id": "replay-fidelity-run-2",
+      "completeness": 1.0,
+      "expected_history_depth": 5,
+      "recovered_history_depth": 7,
+      "trace_integrity": true,
+      "divergence_count": 0,
+      "divergences": [],
+      "passed_strict": true
+    },
+    {
+      "thread_id": "replay-fidelity-run-3",
+      "completeness": 1.0,
+      "expected_history_depth": 5,
+      "recovered_history_depth": 7,
+      "trace_integrity": true,
+      "divergence_count": 0,
+      "divergences": [],
+      "passed_strict": true
+    }
+  ]
+}
