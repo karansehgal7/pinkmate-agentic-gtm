@@ -34,6 +34,11 @@ from pinkmate.state import (
     ScoreOutput,
     TraceEntry,
 )
+from pinkmate.persistence import (
+    make_checkpointer,
+    thread_config,
+    DEFAULT_SQLITE_PATH,
+)
 
 __all__ = [
     "BeliefState",
@@ -47,4 +52,7 @@ __all__ = [
     "EnrichedRecord",
     "ScoreOutput",
     "TraceEntry",
+    "make_checkpointer",
+    "thread_config",
+    "DEFAULT_SQLITE_PATH",
 ]

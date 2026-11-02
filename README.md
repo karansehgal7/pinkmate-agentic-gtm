@@ -45,6 +45,8 @@ pinkmate-agentic-gtm/
 │   ├─ qmdp.py                # Belief state, superposed belief, governance
 │   │                         # commit predicate (paper §III.A) — Slice 1
 │   ├─ state.py               # Pydantic PipelineState + τ_exec trace (§III.A) — Slice 1
+│   ├─ persistence.py         # Checkpointer factory — MemorySaver | SqliteSaver
+│   │                         # (paper §III.B replay fidelity) — Slice 3
 │   └─ ml/                    # Imbalance-aware ML layer (Slice 2)
 │       ├─ __init__.py
 │       ├─ dataset.py         # Taiwan Bankruptcy UCI 572 loader (§VI.A, §VIII)
@@ -65,7 +67,8 @@ pinkmate-agentic-gtm/
 │
 ├─ workflows/                 # Orchestrated workflows and routing
 │   ├─ pipeline.py            # LangGraph StateGraph with governance-gated edge
-│   │                         # (Slice 1 — authoritative orchestration layer)
+│   │                         # (Slice 1 orchestration + Slice 3 durable
+│   │                         #  checkpoint-backend plumbing)
 │   └─ pipeline.yaml          # DEPRECATED; retained for commit-history continuity
 │
 ├─ scripts/                   # Standalone reproduction scripts
@@ -78,7 +81,9 @@ pinkmate-agentic-gtm/
 │   ├─ test_attribution.py          # Slice 2 — σ_SHAP
 │   ├─ test_model_zoo.py            # Slice 2 — six-model ensemble
 │   ├─ test_dataset.py              # Slice 2 — Taiwan loader + preprocessing
-│   └─ test_slice2_integration.py   # Slice 2 — full pipeline + §VI.C findings
+│   ├─ test_slice2_integration.py   # Slice 2 — full pipeline + §VI.C findings
+│   └─ test_checkpointing.py        # Slice 3 — SqliteSaver + cross-process
+│                                   #   replay fidelity (§III.B)
 │
 └─ docs/                      # Technical documentation
     └─ architecture.md        # Paper ↔ code map, slice roadmap
@@ -87,6 +92,8 @@ pinkmate-agentic-gtm/
 **Slice 1 status (shipped).** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are live and executable end-to-end on a mock lead with `python -m workflows.pipeline`.
 
 **Slice 2 status (shipped).** The imbalance-aware ML layer is live: six-model ensemble, SMOTE, TreeSHAP σ_SHAP measurement harness, and a reproduction script (`scripts/reproduce_table2.py`) that reproduces the paper's Table I and Table II against the real UCI 572 dataset with tolerance-based assertions (σ_SHAP ±0.005, recall ±0.03). The ScoringAgent now runs the real six-model ensemble when `models/` is populated, and falls back transparently to the Slice 1 deterministic placeholder predictor (with a `RuntimeWarning`) when models are not yet trained.
+
+**Slice 3 status (shipped).** Durable checkpointing is live: a `make_checkpointer()` factory in `pinkmate/persistence.py` selects between `MemorySaver` (default, in-process) and `SqliteSaver` (on-disk, cross-process). `run_pipeline(initial, thread_id, checkpoint_backend="sqlite", ...)` persists every post-node `PipelineState` snapshot to disk keyed by `thread_id`, operationalising the paper's §III.B replay-fidelity claim. Twelve new tests in `tests/test_checkpointing.py` verify SQLite persistence, cross-process replay fidelity (a fresh `SqliteSaver` instance pointed at the same DB file recovers the terminal state and full execution trace), thread isolation, and the factory contract. PostgreSQL swap for team/multi-instance deployments is the next natural extension.
 
 ---
 
@@ -143,8 +150,9 @@ PinkMate is being built against the paper on a weekly slice cadence. Each slice 
 
 - **Slice 1 (shipped).** Q-MDP formal structure wired into LangGraph with deterministic-replay smoke tests. `pinkmate/qmdp.py`, `pinkmate/state.py`, `workflows/pipeline.py`, test harness, paper-to-code map in `docs/architecture.md`.
 - **Slice 2 (shipped).** Imbalance-aware ML layer per paper §III.C–D and §V — six-model ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost), SMOTE on training partition only, TreeSHAP attribution with σ_SHAP measurement harness. `scripts/reproduce_table2.py` reproduces Table I and Table II against UCI 572 with tolerance-based assertions. `ScoringAgent` now runs real pickled models when present, with a transparent fallback to the Slice 1 placeholder.
-- **Slice 3.** Durable checkpointing per paper §III.B replay-fidelity claim — `MemorySaver` → `SqliteSaver` → PostgreSQL checkpointer for cross-process audit-trail persistence.
+- **Slice 3 (shipped).** Durable checkpointing per paper §III.B replay-fidelity claim — `pinkmate/persistence.py::make_checkpointer()` factory, `MemorySaver` → `SqliteSaver` with per-`thread_id` audit trail on disk, `run_pipeline()` helper threading the durability contract from caller to compiled graph, 12 new tests covering SQLite persistence, cross-process replay fidelity, thread isolation, and the factory contract. PostgreSQL swap is a single-call-site change against this factory in a later slice.
 - **Slice 4.** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion deployment's measurement.
+- **Slice 5 (deferred).** GTM-domain ensemble retrain — train the six-model zoo on B2B conversion labels (lead → MQL → SQL → closed-won) once a labelled corpus is available, closing the Taiwan-vs-GTM feature-space mismatch currently surfaced by the ScoringAgent's `RuntimeWarning`. Product-arc work scoped alongside this slice; the σ_SHAP governance harness carries over unchanged.
 - **Later.** Integration surface — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.
 
 Numbers will be reported only once measured against the slices that produce them.

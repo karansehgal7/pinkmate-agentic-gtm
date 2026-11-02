@@ -19,6 +19,7 @@ The paper's final paragraph names this repository (`github.com/karansehgal7/pink
 | §III.A, commit predicate | `commit(i*) ← argmax_i P(s_t\|o_{1:t}, a_{1:t}) s.t. P > θ_gov` | `pinkmate/qmdp.py` → `governance_commit()` |
 | §III.B, orchestration graph | `G = (V, E)` — asynchronous event-driven | `workflows/pipeline.py` → LangGraph `StateGraph` |
 | §III.B, scheduling bound | `T_fa = O(log n + k)` | Enforced by LangGraph priority scheduler; empirical validation in Slice 4 |
+| §III.B, replay fidelity | Durable τ_exec persistence across orchestration restarts | `pinkmate/persistence.py` → `make_checkpointer()` factory + `SqliteSaver`; verified by `tests/test_checkpointing.py` |
 | §III.C, SMOTE | `x_new = x_i + λ(x_nn − x_i)` | `pinkmate/ml/imbalance.py` → `apply_smote()` |
 | §III.D, model zoo | LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost | `pinkmate/ml/model_zoo.py` → `build_model_zoo()`, `train_zoo()` |
 | §IV.B, risk-sensitive loss | `L_risk = αFN + βFP, α > β` | Metric scaffolding in `pinkmate/ml/pipeline.py::ModelMetrics`; full `L_risk` landing in Slice 3 |
@@ -68,6 +69,31 @@ The paper's §III.B claims deterministic execution and reproducible replay. Oper
 - **Trace is complete.** Every orchestration node appends a `TraceEntry` with `(step, node, action, state_before, state_after, metadata)`. The trace is the paper's `τ_exec`.
 - **Replay is testable.** `tests/test_pipeline.py::TestDeterministicReplay` asserts that two independent runs on identical inputs produce identical final state (score, belief, governance decision, segment, next-best action, trace signature).
 - **No wall-clock reads inside the graph.** All sequencing uses the integer `step` counter so a replayed trace is identical regardless of execution speed.
+- **Durability (Slice 3).** The `SqliteSaver` checkpointer persists every post-node `PipelineState` snapshot to disk, keyed by `thread_id`, so the trace survives orchestration restarts. `tests/test_checkpointing.py::TestCrossProcessReplayFidelity` asserts that a fresh `SqliteSaver` instance pointed at the same on-disk file reconstructs the terminal state and the full execution trace τ_exec identical to the original run — the paper's cross-process replay contract operationalised.
+
+---
+
+## 5a. Durable checkpointing architecture (§III.B — Slice 3)
+
+The checkpointer is a swappable backend behind one factory call:
+
+```python
+from pinkmate.persistence import make_checkpointer
+
+# In-process, Slice 1 behaviour (non-durable, fast).
+cp = make_checkpointer(backend="memory")
+
+# On-disk, Slice 3 behaviour (durable, cross-process).
+cp = make_checkpointer(backend="sqlite", path="checkpoints/pinkmate.sqlite")
+```
+
+**Lifecycle.** Each `make_checkpointer(backend="sqlite", ...)` call opens its own `sqlite3.Connection` and calls `SqliteSaver.setup()` to create the `checkpoints` and `writes` tables idempotently. The connection stays open for the lifetime of the compiled LangGraph app. For tests, `tmp_path`-scoped files give per-test isolation without an external database.
+
+**Thread model.** `thread_id` is the audit-trail key. Distinct lead runs use distinct `thread_id` values; re-invoking the compiled graph with the same `thread_id` resumes from (or appends to) that thread's persisted history. Thread isolation is verified at the raw-SQL level in `TestThreadIsolation`.
+
+**Serialisation.** `PipelineState` is a Pydantic v2 model and its nested `SuperposedBelief`, `GovernanceCommit`, and `TraceEntry` are either Pydantic models or `frozen=True` dataclass-like Pydantic models. LangGraph's built-in `JsonPlusSerializer` round-trips these cleanly through the SQLite blob columns.
+
+**Later-slice extension.** PostgreSQL is a single call-site change: `make_checkpointer(backend="postgres", dsn=...)` with a `PostgresSaver` instantiated inside the factory. No other code moves. This is the pattern the Slice 3 factory was shaped to support.
 
 ---
 
@@ -75,8 +101,9 @@ The paper's §III.B claims deterministic execution and reproducible replay. Oper
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
 - **Slice 2 (shipped):** Imbalance-aware ML layer — six-model ensemble (§III.D), SMOTE (§III.C), TreeSHAP + σ_SHAP measurement (§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (σ_SHAP ±0.005, recall ±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
-- **Slice 3:** Durable checkpointing — swap `MemorySaver` for `SqliteSaver`, then PostgreSQL. Enables cross-process audit-trail persistence (per §III.B replay fidelity claim).
+- **Slice 3 (shipped):** Durable checkpointing — `pinkmate/persistence.py::make_checkpointer()` factory selects between `MemorySaver` and `SqliteSaver`. `run_pipeline(initial, thread_id, checkpoint_backend="sqlite", ...)` persists per-node snapshots to disk under `thread_id`. 12 new tests in `tests/test_checkpointing.py` verify SQLite persistence, cross-process replay fidelity (fresh `SqliteSaver` recovers terminal state + full τ_exec), thread isolation, and the factory contract. PostgreSQL swap is a single-call-site change against the factory.
 - **Slice 4:** Empirical validation — latency benchmarks against the `T_fa = O(log n + k)` scheduling claim (§III.B), replay-fidelity harness, audit-trace-completeness metric aligned with the ESG companion paper's measurement.
+- **Slice 5 (deferred, product-arc):** GTM-domain ensemble retrain — train the six-model zoo on actual B2B conversion labels (lead → MQL → SQL → closed-won). Closes the Taiwan-vs-GTM feature-space mismatch currently surfaced by `ScoringAgent`'s `RuntimeWarning` when running the demo pipeline against the Slice 2 Taiwan-trained models. The σ_SHAP governance harness is domain-agnostic and carries over unchanged.
 
 ---
 
@@ -90,6 +117,35 @@ python -m workflows.pipeline
 ```
 
 Expected output: a demo lead ingested, scored, committed through governance, segmented into a tier, and routed to a next-best action, with the full execution trace printed. The ScoringAgent falls back to its deterministic placeholder predictor (a Slice 1 behaviour retained in Slice 2) when real trained models are not yet present on disk, and emits a `RuntimeWarning` noting this.
+
+### Run against the durable SQLite checkpointer (Slice 3)
+
+```python
+from pathlib import Path
+from pinkmate.state import LeadInput, PipelineState
+from workflows.pipeline import run_pipeline
+
+initial = PipelineState(
+    lead_input=LeadInput(
+        lead_id="DEMO-SQLITE",
+        company="Acme SaaS",
+        role="VP of Engineering",
+        industry="SaaS",
+        funding_stage="Series_A",
+        team_size=120,
+        source="demo",
+    )
+)
+
+final = run_pipeline(
+    initial,
+    thread_id="demo-sqlite-thread",
+    checkpoint_backend="sqlite",
+    checkpoint_path=Path("checkpoints/pinkmate.sqlite"),
+)
+```
+
+The on-disk SQLite file persists every per-node `PipelineState` snapshot under `thread_id`. A fresh Python process can later load the same file and call `app.get_state(config)` on a freshly-compiled graph to recover the terminal state and the full execution trace — the paper's §III.B replay-fidelity contract. See `tests/test_checkpointing.py::TestCrossProcessReplayFidelity` for the asserted guarantees.
 
 ### Reproduce the paper's Table I and Table II (requires UCI network access)
 

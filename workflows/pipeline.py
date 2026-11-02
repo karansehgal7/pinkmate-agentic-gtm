@@ -30,10 +30,10 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Optional, Union
 
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from agents.ingestion_agent import IngestionAgent
 from agents.enrichment_agent import EnrichmentAgent
@@ -42,6 +42,11 @@ from agents.segmentation_agent import SegmentationAgent
 from agents.outreach_agent import OutreachAgent
 
 from pinkmate.state import PipelineState, TraceEntry
+from pinkmate.persistence import (
+    CheckpointBackend,
+    make_checkpointer,
+    thread_config,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +109,29 @@ def defer_node(state: PipelineState) -> PipelineState:
 # Graph construction
 # ---------------------------------------------------------------------------
 
-def build_pipeline(checkpointer: object | None = None) -> object:
+def build_pipeline(
+    checkpointer: object | None = None,
+    *,
+    checkpoint_backend: CheckpointBackend = "memory",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+) -> object:
     """
     Build the compiled LangGraph StateGraph for the PinkMate Q-MDP pipeline.
 
     Args:
-        checkpointer: Optional LangGraph checkpointer. Defaults to in-process
-            MemorySaver for Slice 1. Slice 3 will swap in SqliteSaver and
-            later a PostgreSQL checkpointer for durable audit-trail
-            persistence.
+        checkpointer: An already-constructed LangGraph checkpointer. If
+            provided, this takes precedence over `checkpoint_backend` /
+            `checkpoint_path` — the caller has full control over the
+            backend lifecycle (useful in tests that want tmp_path-scoped
+            SqliteSavers).
+        checkpoint_backend: One of ``"memory"`` (Slice 1 default,
+            in-process, non-durable) or ``"sqlite"`` (Slice 3, on-disk,
+            cross-process durable per paper §III.B replay-fidelity claim).
+            Ignored if ``checkpointer`` is already supplied.
+        checkpoint_path: On-disk path for the SQLite checkpoint store;
+            only consulted when ``checkpoint_backend="sqlite"``. If
+            ``None``, defaults to ``checkpoints/pinkmate.sqlite`` relative
+            to the current working directory.
 
     Returns:
         Compiled LangGraph app with .invoke() / .stream() methods.
@@ -153,9 +172,58 @@ def build_pipeline(checkpointer: object | None = None) -> object:
     graph.add_edge("defer", END)
 
     if checkpointer is None:
-        checkpointer = MemorySaver()
+        checkpointer = make_checkpointer(
+            backend=checkpoint_backend,
+            path=checkpoint_path,
+        )
 
     return graph.compile(checkpointer=checkpointer)
+
+
+# ---------------------------------------------------------------------------
+# High-level invocation helper (Slice 3) — threads the thread_id contract
+# through from caller to the compiled graph.
+# ---------------------------------------------------------------------------
+
+def run_pipeline(
+    initial: PipelineState,
+    thread_id: str,
+    *,
+    checkpoint_backend: CheckpointBackend = "memory",
+    checkpoint_path: Optional[Union[str, Path]] = None,
+    checkpointer: object | None = None,
+) -> PipelineState:
+    """
+    Invoke the Q-MDP pipeline on an initial state under a durable thread_id.
+
+    This is the Slice 3 entry point: callers pass a ``thread_id`` which
+    becomes the audit-trail key in the configured checkpointer. Re-invoking
+    with the same ``thread_id`` against the same persisted store resumes
+    from (or appends to) the thread's recorded history — the paper's
+    cross-process replay-fidelity contract (§III.B).
+
+    Args:
+        initial: Seed ``PipelineState`` (lead_input populated).
+        thread_id: Durable audit key for this run.
+        checkpoint_backend: ``"memory"`` or ``"sqlite"``.
+        checkpoint_path: On-disk SQLite path when backend is ``"sqlite"``.
+        checkpointer: Pre-constructed checkpointer; overrides the backend
+            parameters when supplied. Primarily for tests that want fine
+            control over the checkpoint store's lifecycle.
+
+    Returns:
+        The final ``PipelineState`` with trace, belief, governance
+        decision, segment, and next-best action populated.
+    """
+    app = build_pipeline(
+        checkpointer=checkpointer,
+        checkpoint_backend=checkpoint_backend,
+        checkpoint_path=checkpoint_path,
+    )
+    final = app.invoke(initial, config=thread_config(thread_id))
+    if isinstance(final, dict):
+        final = PipelineState.model_validate(final)
+    return final
 
 
 # ---------------------------------------------------------------------------

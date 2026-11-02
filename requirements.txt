@@ -8,13 +8,16 @@ sentence-transformers
 openai
 
 # Slice 2 — Imbalance-aware ML layer + TreeSHAP attribution stability
-xgboost<3
+xgboost
 lightgbm
 catboost
 shap
 imbalanced-learn
 requests
 ucimlrepo
+
+# Slice 3 — Durable checkpointing (paper §III.B replay fidelity)
+langgraph-checkpoint-sqlite
 
 # Testing
 pytest
