@@ -12,6 +12,19 @@ Slice 2 scope (shipped):
       attribution-stability signal is degraded.
     - Reads the saved σ_SHAP from ``models/attribution.json`` when available
       and uses it as a confidence derating signal on the committed state.
+
+Slice 3.5 scope (shipped):
+    - Adds a ``model_source`` constructor flag that selects between two
+      deployment paths without changing any downstream behaviour:
+        * ``"zoo"`` (default): current Slice 2 behaviour — loads from
+          ``models/``, falls back with ``RuntimeWarning`` on mismatch.
+          Research-reproduction path.
+        * ``"placeholder"``: skips model loading entirely. No file reads,
+          no warnings. Product-demo deployment path for website / client
+          demos where the Taiwan-vs-GTM warnings would be noise rather
+          than signal. Becomes equivalent to ``"zoo"`` once Slice 5
+          ships GTM-domain models that match the deployment feature
+          schema.
 """
 
 from __future__ import annotations
@@ -22,7 +35,7 @@ import os
 import pickle
 import warnings
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
@@ -63,13 +76,66 @@ class ScoringAgent:
         "catboost",
     )
 
-    def __init__(self, models_dir: str = "models") -> None:
+    def __init__(
+        self,
+        models_dir: str = "models",
+        model_source: Literal["zoo", "placeholder"] = "zoo",
+    ) -> None:
+        """
+        Build a ScoringAgent in one of two deployment modes.
+
+        Slice 3.5 — three deployment paths this flag unlocks:
+
+            model_source="zoo" (default, research-reproduction path):
+                Loads the six-model ensemble from ``models_dir`` if present
+                (produced by ``scripts/reproduce_table2.py``). If any model
+                pickle is missing OR fails ``predict_proba`` at inference
+                time (e.g., Taiwan-trained models called against a 5-feature
+                GTM demo lead), the agent transparently falls back to the
+                Slice 1 deterministic placeholder predictor and emits a
+                ``RuntimeWarning`` so the mismatch is visible. Use this for
+                paper reproduction, RAEng / academic review, and any
+                research-mode invocation where the warnings are the signal
+                (not noise).
+
+            model_source="placeholder" (product-demo path):
+                Skips model loading entirely — no file reads, no warnings,
+                no attempted inference against real pickles. The agent uses
+                the Slice 1 deterministic placeholder predictor directly.
+                Use this for the product-demo surface (website
+                screenshots, pitch decks, client demos) where the
+                Taiwan-vs-GTM warnings would be noise, not signal. When
+                Slice 5 ships (GTM-domain ensemble retrain) this mode
+                becomes effectively equivalent to the "zoo" mode.
+
+        Args:
+            models_dir: Directory holding trained model pickles. Only
+                consulted when ``model_source="zoo"``.
+            model_source: Deployment mode — ``"zoo"`` or ``"placeholder"``.
+                Defaults to ``"zoo"`` for backward compatibility; all
+                existing callers continue to work unchanged.
+        """
         self.models_dir = Path(models_dir)
+        self.model_source = model_source
         self.models: Dict[str, Any] = {}
         self.sigma_shap_by_model: Dict[str, float] = {}
         self.feature_order: Optional[List[str]] = None
         self._using_real_models: bool = False
-        self._load_models()
+
+        if self.model_source == "zoo":
+            # Research-reproduction path: load models + emit warning on
+            # any mismatch. Current behaviour from Slice 2.
+            self._load_models()
+        else:
+            # Product-demo path: skip model loading entirely. The existing
+            # _predict_proba() routing in Slice 2 already falls through to
+            # the Slice 1 placeholder when _using_real_models is False, so
+            # no further plumbing is needed — this flag just prevents the
+            # file reads and the warning emission.
+            LOGGER.info(
+                "ScoringAgent constructed in placeholder mode "
+                "(product-demo path; no model loading, no warnings)."
+            )
 
     # ------------------------------------------------------------------
     # Model loading — Slice 2
@@ -273,29 +339,44 @@ class ScoringAgent:
 
 
 if __name__ == "__main__":
-    # Preserved runnable example (updated for Slice 1 state object).
+    # Preserved runnable example (updated for Slice 1 state object + Slice 3.5
+    # dual deployment modes).
     from pinkmate.state import EnrichedRecord, LeadInput, PipelineState
 
-    agent = ScoringAgent()
-    state = PipelineState(
-        lead_input=LeadInput(
-            lead_id="L001",
-            industry="SaaS",
-            funding_stage="Series_A",
-            team_size=120,
-            role="VP of Engineering",
-        ),
-        enriched=EnrichedRecord(
-            lead_id="L001",
-            features={
-                "industry_saas": 1,
-                "funding_stage_series_a": 1,
-                "team_size_50_200": 1,
-                "role_seniority_score": 0.9,
-                "hiring_for_gtm": 1,
-            },
-        ),
-    )
-    result = agent(state)
-    print("Score:", result.score.model_dump())
-    print("Belief:", result.belief.as_dict())
+    def _build_state() -> PipelineState:
+        return PipelineState(
+            lead_input=LeadInput(
+                lead_id="L001",
+                industry="SaaS",
+                funding_stage="Series_A",
+                team_size=120,
+                role="VP of Engineering",
+            ),
+            enriched=EnrichedRecord(
+                lead_id="L001",
+                features={
+                    "industry_saas": 1,
+                    "funding_stage_series_a": 1,
+                    "team_size_50_200": 1,
+                    "role_seniority_score": 0.9,
+                    "hiring_for_gtm": 1,
+                },
+            ),
+        )
+
+    print("=" * 60)
+    print("ScoringAgent — research-reproduction mode (default, 'zoo')")
+    print("=" * 60)
+    agent_zoo = ScoringAgent(model_source="zoo")
+    result_zoo = agent_zoo(_build_state())
+    print("Score:", result_zoo.score.model_dump())
+    print("Belief:", result_zoo.belief.as_dict())
+
+    print()
+    print("=" * 60)
+    print("ScoringAgent — product-demo mode ('placeholder')")
+    print("=" * 60)
+    agent_demo = ScoringAgent(model_source="placeholder")
+    result_demo = agent_demo(_build_state())
+    print("Score:", result_demo.score.model_dump())
+    print("Belief:", result_demo.belief.as_dict())

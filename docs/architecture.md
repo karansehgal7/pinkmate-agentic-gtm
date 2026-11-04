@@ -151,13 +151,40 @@ Empirical numerical outcomes (actual R² values on real runs, verdict distributi
 
 ---
 
+## 5c. ScoringAgent deployment-mode flag (Slice 3.5)
+
+Slice 3.5 is **product-arc ergonomics, not a paper claim.** The `ScoringAgent` constructor gains a `model_source` parameter that selects between two deployment paths without changing any downstream scoring, belief-emission, or governance behaviour.
+
+### Three deployment paths
+
+| Path | Construction | Audience | Warnings |
+|------|-------------|----------|----------|
+| Research reproduction | `ScoringAgent(model_source="zoo")` (default) | RAEng reviewers, academic grant panels, anyone reproducing paper claims | **Yes, transparently** — the Taiwan-vs-GTM warning is the signal, not noise |
+| Product demo (Slice 3.5) | `ScoringAgent(model_source="placeholder")` | Website screenshots, pitch decks, client demos, ClickUp tiles, prospects | **None** — clean output |
+| Production (Slice 5+) | `ScoringAgent(model_source="zoo")` with GTM-trained models in `models/` | Real B2B scoring when labelled data is available | None — real predictions |
+
+### Why the flag is decoupled from Slice 5
+
+Slice 5 (data-gated GTM retrain) is the long-term fix: once the ensemble is trained on domain-matching labels, the warnings disappear organically in `"zoo"` mode and `"placeholder"` becomes effectively equivalent. Slice 3.5 is the near-term fix that unblocks product-arc work (website, ClickUp, integrations) **without waiting on the data-gated Slice 5**, because the product-demo surface shouldn't show warnings to prospects regardless of research timeline.
+
+### Backward compatibility
+
+The default is `"zoo"` — all existing callers (`workflows/pipeline.py`, every test, every script) continue to work unchanged. Slice 3.5 is purely additive.
+
+### Equivalence contract
+
+When `models/` is empty (as on a fresh checkout before `scripts/reproduce_table2.py` has been run), `"zoo"` mode falls back to the same Slice 1 deterministic placeholder predictor that `"placeholder"` mode uses directly. The two modes therefore produce **identical scores on identical input** in that state, pinned by `tests/test_scoring_agent_modes.py::TestZooAndPlaceholderEquivalence`.
+
+---
+
 ## 6. Slice roadmap
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
 - **Slice 2 (shipped):** Imbalance-aware ML layer — six-model ensemble (§III.D), SMOTE (§III.C), TreeSHAP + σ_SHAP measurement (§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (σ_SHAP ±0.005, recall ±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
 - **Slice 3 (shipped):** Durable checkpointing — `pinkmate/persistence.py::make_checkpointer()` factory selects between `MemorySaver` and `SqliteSaver`. `run_pipeline(initial, thread_id, checkpoint_backend="sqlite", ...)` persists per-node snapshots to disk under `thread_id`. 12 new tests in `tests/test_checkpointing.py` verify SQLite persistence, cross-process replay fidelity (fresh `SqliteSaver` recovers terminal state + full τ_exec), thread isolation, and the factory contract. PostgreSQL swap is a single-call-site change against the factory.
 - **Slice 4 (shipped):** Empirical validation of paper §III.B operational claims. `pinkmate/benchmarks/latency.py` measures total latency across n ∈ {5, 10, 25, 50, 100, 250} on a parametric chain topology with near-no-op nodes, isolating per-step scheduler cost. `pinkmate/benchmarks/replay_fidelity.py` generalises Slice 3's cross-process replay proof into a reusable consumer harness (completeness, trace integrity, per-field divergence). `scripts/run_benchmarks.py` executes both and writes committed artefacts: `docs/benchmarks_report.md`, `docs/benchmarks_report.json`, `docs/figures/latency_total_vs_n.png`, `docs/figures/latency_per_step_overhead.png`, `docs/figures/replay_fidelity_summary.png`. 20 new harness-correctness tests in `tests/test_benchmarks.py` (empirical fits not asserted — those wobble under OS scheduler jitter; the committed markdown report carries the quantitative numbers for reviewer inspection).
-- **Slice 5 (deferred, product-arc, data-gated):** GTM-domain ensemble retrain — train the six-model zoo on actual B2B conversion labels (lead → MQL → SQL → closed-won). Closes the Taiwan-vs-GTM feature-space mismatch currently surfaced by `ScoringAgent`'s `RuntimeWarning` when running the demo pipeline against the Slice 2 Taiwan-trained models. The σ_SHAP governance harness is domain-agnostic and carries over unchanged. Requires acquiring a labelled B2B conversion corpus (PinkMate landing-page capture, partner data, or defensible synthetic generator).
+- **Slice 3.5 (shipped, product-arc ergonomics):** `ScoringAgent` deployment-mode flag — `model_source="zoo"|"placeholder"` separates the research-reproduction path (loads models, warnings on mismatch) from the product-demo path (skips model loading entirely, zero warnings). Backward-compatible default is `"zoo"`. Unblocks product-arc work (website, ClickUp, integrations) without waiting on Slice 5. 9 new tests in `tests/test_scoring_agent_modes.py`.
+- **Slice 5 (deferred, product-arc, data-gated):** GTM-domain ensemble retrain — train the six-model zoo on actual B2B conversion labels (lead → MQL → SQL → closed-won). Closes the Taiwan-vs-GTM feature-space mismatch currently surfaced by `ScoringAgent`'s `RuntimeWarning` in `"zoo"` mode (no longer a concern in `"placeholder"` mode after Slice 3.5). The σ_SHAP governance harness is domain-agnostic and carries over unchanged. Requires acquiring a labelled B2B conversion corpus (public datasets, partner data, or defensible synthetic generator).
 
 ---
 
