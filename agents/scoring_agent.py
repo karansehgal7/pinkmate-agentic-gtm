@@ -78,7 +78,7 @@ class ScoringAgent:
 
     def __init__(
         self,
-        models_dir: str = "models",
+        models_dir: str = "models/gtm",
         model_source: Literal["zoo", "placeholder"] = "zoo",
     ) -> None:
         """
@@ -172,8 +172,10 @@ class ScoringAgent:
                 f"pickles missing from {self.models_dir.resolve()} "
                 f"({', '.join(missing[:3])}{'...' if len(missing) > 3 else ''}). "
                 "Falling back to Slice 1 deterministic placeholder predictor. "
-                "Run `python scripts/reproduce_table2.py` to train real models "
-                "and populate `models/`.",
+                "To train real models: for GTM-domain, run "
+                "`python scripts/train_gtm_ensemble.py` (Slice 5, writes to "
+                "models/gtm/). For Taiwan paper reproduction, run "
+                "`python scripts/reproduce_table2.py` (writes to models/taiwan/).",
                 RuntimeWarning,
                 stacklevel=2,
             )

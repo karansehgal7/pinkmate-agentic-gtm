@@ -24,8 +24,8 @@ The paper's final paragraph names this repository (`github.com/karansehgal7/pink
 | §III.D, model zoo | LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost | `pinkmate/ml/model_zoo.py` → `build_model_zoo()`, `train_zoo()` |
 | §IV.B, risk-sensitive loss | `L_risk = αFN + βFP, α > β` | Metric scaffolding in `pinkmate/ml/pipeline.py::ModelMetrics`; full `L_risk` landing in Slice 3 |
 | §V, attribution stability | `σ_SHAP = √((1/m) Σ_j Var_k \|φ_{j,k}\|)` | `pinkmate/ml/attribution.py` → `sigma_shap()`, `compute_rotated_shap_variance()` |
-| §VI.A, reproducibility protocol | seed=42, 80/20 stratified, SMOTE on train only, TreeSHAP K=50 × 100 × 200 | `pinkmate/ml/pipeline.py` → `run_slice_two_pipeline()`; dataset in `pinkmate/ml/dataset.py` |
-| §VI.B / §VI.C, Table I / Table II | Per-model metrics + σ_SHAP comparison | `scripts/reproduce_table2.py` |
+| §VI.A, reproducibility protocol | seed=42, 80/20 stratified, SMOTE on train only, TreeSHAP K=50 × 100 × 200 | `pinkmate/ml/pipeline.py` → `run_slice_two_pipeline()`; Taiwan loader `pinkmate/ml/dataset.py`; LeadForge loader `pinkmate/ml/leadforge_loader.py` |
+| §VI.B / §VI.C, Table I / Table II | Per-model metrics + σ_SHAP comparison | `scripts/reproduce_table2.py` (Taiwan, magnitude tolerance); `scripts/train_gtm_ensemble.py` (LeadForge, qualitative-direction) — Slice 5 |
 
 ---
 
@@ -177,6 +177,89 @@ When `models/` is empty (as on a fresh checkout before `scripts/reproduce_table2
 
 ---
 
+## 5d. GTM-domain extension (Slice 5)
+
+Slice 5 extends the Slice 2 six-model ensemble + σ_SHAP governance harness to the B2B GTM domain, trained on LeadForge Lead Scoring v1 (HuggingFace: `shaypal5/leadforge-lead-scoring-v1`, MIT licence, synthetic B2B SaaS procurement scenario). This is a **product-arc domain extension**, and like Slice 2's Taiwan-benchmark validation, it is a methodology-validation slice — NOT a performance claim about real B2B GTM leads.
+
+### Three deployment domains, one framework
+
+The Q-MDP framework (§III) is domain-agnostic. Slice 5 operationalises this by running the same ensemble + σ_SHAP harness on a second dataset:
+
+| Domain | Dataset | Training script | Writes to | Purpose |
+|--------|---------|-----------------|-----------|---------|
+| Financial distress (paper benchmark) | Taiwan Bankruptcy UCI 572 (6819 rows, 95 features, 3.23% minority) | `scripts/reproduce_table2.py` | `models/taiwan/` | Reproduces paper Table I + Table II within tolerance; RAEng / academic review artefact |
+| B2B GTM (product arc) | LeadForge Lead Scoring v1 (5000 leads, 51 encoded features, ~20% minority) | `scripts/train_gtm_ensemble.py` | `models/gtm/` | Methodology validation on B2B-shaped data; populates the ScoringAgent's default `models_dir` |
+| ESG climate-risk (companion deployment) | Cross-deployment at SustainGRC / DCarbon Global | External | External | Paper §VI companion arc, not in this repo |
+
+### Subdirectory structure (Slice 5 Option A)
+
+Prior to Slice 5, `models/` held Taiwan models directly. Post-Slice-5:
+
+```
+models/
+├─ taiwan/              # Reproduction artefact (Slice 2)
+│   ├─ logistic_regression.pkl
+│   ├─ ... (6 models)
+│   ├─ metrics.json
+│   └─ attribution.json
+└─ gtm/                 # Product-arc ensemble (Slice 5)
+    ├─ logistic_regression.pkl
+    ├─ ... (6 models)
+    ├─ metrics.json
+    └─ attribution.json
+```
+
+Both subdirectories are `.gitignored` — researchers populate them locally by running the appropriate script.
+
+**ScoringAgent default**: `models_dir="models/gtm"` (product-first positioning). Taiwan reproduction becomes explicit: `ScoringAgent(models_dir="models/taiwan")`.
+
+### LeadForge feature schema
+
+After `pinkmate/ml/leadforge_loader.py` preprocesses the raw dataset, the feature matrix has ~26 columns (before one-hot encoding) → ~51 columns (after). Explicitly excluded:
+
+- **Identity**: `lead_id`, `account_id`, `contact_id` (foreign keys, not features)
+- **Timing**: `lead_created_at` (simulation clock, would leak)
+- **Leakage trap**: `total_touches_all` (documented by LeadForge as counting touches across the full 90-day horizon — must not be a training feature)
+- **Target**: `converted_within_90_days` (becomes `y`)
+
+Included feature families:
+
+- **Firmographics** (one-hot): `industry`, `region`, `employee_band`, `estimated_revenue_band`, `process_maturity_band`
+- **Contact** (one-hot): `role_function`, `seniority`, `buyer_role`
+- **Lead meta** (one-hot): `lead_source`
+- **Engagement** (numeric): `touch_count`, `inbound/outbound_touch_count`, `session_count`, `pricing_page_views`, `demo_page_views`, `total_session_duration_seconds`, `touches_days_0_7`, `touches_last_7_days`, `days_since_first_touch`, `days_since_last_touch`
+- **Funnel** (numeric + boolean): `activity_count`, `opportunity_created`, `has_open_opportunity`, `opportunity_estimated_acv`, `expected_acv`
+
+### LeadInput schema evolution
+
+`pinkmate.state.LeadInput` gains three optional band fields in Slice 5:
+
+- `employee_band: Optional[str]` — maps to LeadForge `employee_band` categorical
+- `estimated_revenue_band: Optional[str]` — maps to LeadForge `estimated_revenue_band` categorical
+- `process_maturity_band: Optional[str]` — maps to LeadForge `process_maturity_band` categorical
+
+`funding_stage` is retained in the `LeadInput` API (backward-compat) but is **dropped from the Slice 5 training schema** because LeadForge does not include it. Rationale: training a model on a feature that's 100% missing adds zero information; synthesising a proxy from other bands would introduce a correlation that doesn't exist in reality (research-ethics violation). The field re-enters the training schema in Slice 5.1+ when a real B2B corpus with funding-stage labels becomes available.
+
+### Qualitative-direction verdicts (per Phase 1 Critique 3)
+
+Slice 2 reproduction uses magnitude-tolerance verdicts (σ_SHAP ±0.005, recall ±0.03 vs paper values). Slice 5 has **no paper-declared target values** for LeadForge, so uses **qualitative-direction verdicts** instead:
+
+- **SMOTE direction on XGBoost**: Taiwan Slice 2 showed SMOTE INCREASES σ_SHAP. Expect direction to transfer (may have weaker magnitude on LeadForge's ~20% minority vs Taiwan's 3.23%).
+- **Model stability ordering**: Taiwan Slice 2 showed LightGBM σ_SHAP < XGBoost σ_SHAP under SMOTE. Expect ordering to transfer (this is a model-architectural property, less dataset-dependent).
+
+DRIFT verdicts on LeadForge are **legitimate scientific outcomes**, not test failures. They would be reported in `docs/gtm_training_report.md` and interpreted in context (likely due to milder imbalance reducing SMOTE's effect size).
+
+### Honesty bar — methodology validation only
+
+The σ_SHAP numbers reported in `docs/gtm_training_report.md` and the committed PNG charts under `docs/figures/gtm/` are the output of applying the Q-MDP σ_SHAP governance harness to B2B-shaped tabular data for the first time. **They DO NOT constitute performance claims about PinkMate on real B2B GTM leads.**
+
+This matches Slice 2's framing — the paper validates the framework on Taiwan Bankruptcy (the declared benchmark); it never claims Taiwan-trained models should be used for B2B scoring. LeadForge plays the same methodology-validation role for the product arc. Real-data validation is deferred to:
+
+- **Slice 5.1**: X Education secondary sanity check + LeadForge advanced tier
+- **Later (data-gated)**: pink-mate.co.uk landing-page capture over 6-12 months, academic partnership via Kent Business School / Khawar network, or specific industry engagement
+
+---
+
 ## 6. Slice roadmap
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
@@ -184,7 +267,9 @@ When `models/` is empty (as on a fresh checkout before `scripts/reproduce_table2
 - **Slice 3 (shipped):** Durable checkpointing — `pinkmate/persistence.py::make_checkpointer()` factory selects between `MemorySaver` and `SqliteSaver`. `run_pipeline(initial, thread_id, checkpoint_backend="sqlite", ...)` persists per-node snapshots to disk under `thread_id`. 12 new tests in `tests/test_checkpointing.py` verify SQLite persistence, cross-process replay fidelity (fresh `SqliteSaver` recovers terminal state + full τ_exec), thread isolation, and the factory contract. PostgreSQL swap is a single-call-site change against the factory.
 - **Slice 4 (shipped):** Empirical validation of paper §III.B operational claims. `pinkmate/benchmarks/latency.py` measures total latency across n ∈ {5, 10, 25, 50, 100, 250} on a parametric chain topology with near-no-op nodes, isolating per-step scheduler cost. `pinkmate/benchmarks/replay_fidelity.py` generalises Slice 3's cross-process replay proof into a reusable consumer harness (completeness, trace integrity, per-field divergence). `scripts/run_benchmarks.py` executes both and writes committed artefacts: `docs/benchmarks_report.md`, `docs/benchmarks_report.json`, `docs/figures/latency_total_vs_n.png`, `docs/figures/latency_per_step_overhead.png`, `docs/figures/replay_fidelity_summary.png`. 20 new harness-correctness tests in `tests/test_benchmarks.py` (empirical fits not asserted — those wobble under OS scheduler jitter; the committed markdown report carries the quantitative numbers for reviewer inspection).
 - **Slice 3.5 (shipped, product-arc ergonomics):** `ScoringAgent` deployment-mode flag — `model_source="zoo"|"placeholder"` separates the research-reproduction path (loads models, warnings on mismatch) from the product-demo path (skips model loading entirely, zero warnings). Backward-compatible default is `"zoo"`. Unblocks product-arc work (website, ClickUp, integrations) without waiting on Slice 5. 9 new tests in `tests/test_scoring_agent_modes.py`.
-- **Slice 5 (deferred, product-arc, data-gated):** GTM-domain ensemble retrain — train the six-model zoo on actual B2B conversion labels (lead → MQL → SQL → closed-won). Closes the Taiwan-vs-GTM feature-space mismatch currently surfaced by `ScoringAgent`'s `RuntimeWarning` in `"zoo"` mode (no longer a concern in `"placeholder"` mode after Slice 3.5). The σ_SHAP governance harness is domain-agnostic and carries over unchanged. Requires acquiring a labelled B2B conversion corpus (public datasets, partner data, or defensible synthetic generator).
+- **Slice 5 (shipped — methodology validation on synthetic B2B-shaped data):** GTM-domain extension trained on LeadForge Lead Scoring v1 (MIT licence, synthetic B2B SaaS procurement scenario). `pinkmate/ml/leadforge_loader.py` handles the HF download + preprocessing; `scripts/train_gtm_ensemble.py` trains the six-model ensemble + σ_SHAP harness + writes committed artefacts to `models/gtm/`, `docs/gtm_training_report.md`, `docs/figures/gtm/*.png`. Subdirectory restructure: `models/{gtm,taiwan}/` siblings. `ScoringAgent` default `models_dir` → `models/gtm/`. `LeadInput` gains optional `employee_band`, `estimated_revenue_band`, `process_maturity_band` fields. Qualitative-direction verdicts (SMOTE INCREASES σ_SHAP; LightGBM σ_SHAP < XGBoost σ_SHAP), NOT magnitude-tolerance. 36 new tests. σ_SHAP numbers validate the framework runs end-to-end on B2B-shaped data; **DO NOT constitute performance claims about PinkMate on real B2B GTM leads.** See §5d above for full detail.
+- **Slice 5.1 (deferred):** Secondary sanity check — X Education Lead Scoring (real but EdTech-domain, feature-schema divergent) + LeadForge advanced tier (stress-test under higher noise/missingness).
+- **Later (deferred, data-gated):** Real B2B conversion data path — pink-mate.co.uk landing-page capture over 6-12 months, academic partnership via Kent Business School / Khawar network, or specific industry engagement. When this arrives, retrain Slice 5 ensemble on real labels, re-add `funding_stage` to the training schema, promote to `models/gtm/`.
 
 ---
 

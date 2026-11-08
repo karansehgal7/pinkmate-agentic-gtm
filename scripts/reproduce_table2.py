@@ -91,8 +91,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-attribution", action="store_true",
                    help="Train models + metrics only, skip σ_SHAP measurement.")
     p.add_argument("--seed", type=int, default=42, help="Random seed. Paper default 42.")
-    p.add_argument("--models-dir", type=Path, default=Path("models"),
-                   help="Directory to persist trained models + summaries.")
+    p.add_argument("--models-dir", type=Path, default=Path("models/taiwan"),
+                   help="Directory to persist trained models + summaries. "
+                        "Defaults to models/taiwan post-Slice-5 (Taiwan reproduction "
+                        "artefact kept separate from the GTM-domain models in "
+                        "models/gtm/).")
     return p.parse_args()
 
 

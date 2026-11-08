@@ -41,7 +41,24 @@ from pinkmate.qmdp import SuperposedBelief, GovernanceCommit, DEFAULT_THETA_GOVE
 
 
 class LeadInput(BaseModel):
-    """Raw lead record as ingested from upstream sources (CSV, Apollo, etc.)."""
+    """
+    Raw lead record as ingested from upstream sources (CSV, Apollo, etc.).
+
+    Schema evolution:
+        Slice 1-4: core fields (lead_id, company, role, industry,
+            funding_stage, team_size, source).
+        Slice 5 (GTM domain extension): adds optional band fields that
+            map to the LeadForge Lead Scoring v1 training schema —
+            employee_band, estimated_revenue_band, process_maturity_band.
+            `funding_stage` is retained in the API but is NOT in the
+            Slice 5 training schema (not present in LeadForge data); it
+            re-enters the training schema in Slice 5.1+ when real B2B
+            data with funding-stage labels arrives (see Slice 5 scope
+            notes in docs/architecture.md §5d).
+
+    All Slice 5 band fields are optional with default None, preserving
+    backward compatibility with all Slice 1-4 callers.
+    """
 
     model_config = ConfigDict(extra="allow")
 
@@ -52,6 +69,24 @@ class LeadInput(BaseModel):
     funding_stage: Optional[str] = None
     team_size: Optional[int] = None
     source: str = Field(default="unknown", description="Ingestion source label.")
+
+    # Slice 5 — LeadForge GTM-schema band fields (optional, backward-compat)
+    employee_band: Optional[str] = Field(
+        default=None,
+        description="Employee count band (e.g. '200-999'). Maps to LeadForge "
+                    "employee_band categorical. Preferred over raw team_size "
+                    "when the lead's exact headcount is noisy or unknown.",
+    )
+    estimated_revenue_band: Optional[str] = Field(
+        default=None,
+        description="Annual revenue band (e.g. '$10M-$50M'). Maps to LeadForge "
+                    "estimated_revenue_band categorical.",
+    )
+    process_maturity_band: Optional[str] = Field(
+        default=None,
+        description="Buying-process maturity band ('low'/'medium'/'high'). "
+                    "Maps to LeadForge process_maturity_band categorical.",
+    )
 
 
 class EnrichedRecord(BaseModel):
