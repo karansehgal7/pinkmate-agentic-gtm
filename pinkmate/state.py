@@ -22,11 +22,30 @@ Design intent:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field, ConfigDict
 
 from pinkmate.qmdp import SuperposedBelief, GovernanceCommit, DEFAULT_THETA_GOVERNANCE
+
+
+# ---------------------------------------------------------------------------
+# Slice 5.2 — LeadInput schema versioning for ScoringAgent drift detection
+# ---------------------------------------------------------------------------
+#
+# When a model is trained, the current LEADINPUT_SCHEMA_VERSION is persisted
+# alongside the model artefacts (models/gtm/attribution.json). At inference
+# time, ScoringAgent compares the persisted version against the live
+# constant here. A mismatch triggers a WARNING + trace log, not a hard
+# failure — prediction proceeds on the intersection of features (hybrid
+# fail-fast contract per Slice 5.2 Decision A).
+# ---------------------------------------------------------------------------
+
+#: Slice 5.2 — LeadInput schema version for ScoringAgent drift detection.
+#: Bump this whenever the field set on LeadInput changes in a way that
+#: affects model training — e.g., adding RFM features (slice52_rfm_icp_v1),
+#: adding survival-time fields (future slice6_survival_v1), etc.
+LEADINPUT_SCHEMA_VERSION: str = "slice52_rfm_icp_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +74,15 @@ class LeadInput(BaseModel):
             re-enters the training schema in Slice 5.1+ when real B2B
             data with funding-stage labels arrives (see Slice 5 scope
             notes in docs/architecture.md §5d).
+        Slice 5.2 (deployment-schema alignment): adds optional email +
+            RFM primitives (recency/frequency/monetary/composite) +
+            Clay-style ICP features (5 rule-based binary features + a
+            composite score + A/B/C/D tier). All computed by the
+            EnrichmentAgent from source fields. See docs/architecture.md
+            §5e for the full specification.
 
-    All Slice 5 band fields are optional with default None, preserving
-    backward compatibility with all Slice 1-4 callers.
+    All Slice 5 and Slice 5.2 fields are optional with default None,
+    preserving backward compatibility with all Slice 1-4 callers.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -86,6 +111,97 @@ class LeadInput(BaseModel):
         default=None,
         description="Buying-process maturity band ('low'/'medium'/'high'). "
                     "Maps to LeadForge process_maturity_band categorical.",
+    )
+
+    # Slice 5.2 — Email (needed for Clay ICP non-free-mail check)
+    email: Optional[str] = Field(
+        default=None,
+        description="Lead's email address. Used by Clay-style ICP scoring "
+                    "to detect free-mail providers (gmail.com, yahoo.com, "
+                    "etc.) as lower-signal vs corporate domains.",
+    )
+
+    # Slice 5.2 — Source primitives for RFM computation
+    days_since_last_touch: Optional[int] = Field(
+        default=None,
+        description="Days elapsed since the most recent touch on this lead. "
+                    "Source primitive for compute_recency_score().",
+    )
+    touch_count: Optional[int] = Field(
+        default=None,
+        description="Total number of touches (emails opened, pages viewed, "
+                    "events attended) accumulated for this lead. Source "
+                    "primitive for compute_frequency_score().",
+    )
+    opportunity_estimated_acv: Optional[float] = Field(
+        default=None,
+        description="Estimated annual contract value in USD for the deal if it "
+                    "converts. Source primitive for compute_monetary_score().",
+    )
+    seniority: Optional[str] = Field(
+        default=None,
+        description="Seniority label derived from role ('director', 'vp', "
+                    "'c_suite', 'manager', 'individual_contributor'). Used "
+                    "by Clay-style ICP scoring.",
+    )
+    country: Optional[str] = Field(
+        default=None,
+        description="ISO-2 country code (e.g., 'US', 'UK', 'DE'). Used by "
+                    "Clay-style ICP scoring to check target-country match.",
+    )
+
+    # Slice 5.2 — RFM scores (computed by EnrichmentAgent)
+    recency_score: Optional[float] = Field(
+        default=None,
+        description="Recency score ∈ [0, 1]. 1.0 = most recent touch, 0.0 = "
+                    "no touch within 90 days. Computed from days_since_last_touch.",
+    )
+    frequency_score: Optional[float] = Field(
+        default=None,
+        description="Frequency score ∈ [0, 1], log-scaled, saturates at 20 "
+                    "touches. Computed from touch_count.",
+    )
+    monetary_score: Optional[float] = Field(
+        default=None,
+        description="Monetary score ∈ [0, 1], step-function over ACV bands. "
+                    "Computed from opportunity_estimated_acv.",
+    )
+    composite_rfm_score: Optional[float] = Field(
+        default=None,
+        description="Weighted composite of recency + frequency + monetary "
+                    "(default equal thirds). Computed by EnrichmentAgent.",
+    )
+
+    # Slice 5.2 — Clay-style ICP features (deterministic rule outputs)
+    icp_employees_band_match: Optional[int] = Field(
+        default=None,
+        description="1 if employee_band ∈ ICP target bands, else 0. Clay ICP rule.",
+    )
+    icp_industry_match: Optional[int] = Field(
+        default=None,
+        description="1 if industry (case-insensitive) ∈ ICP target industries, else 0.",
+    )
+    icp_seniority_match: Optional[int] = Field(
+        default=None,
+        description="1 if seniority (case-insensitive) ∈ ICP target seniorities, else 0.",
+    )
+    icp_country_match: Optional[int] = Field(
+        default=None,
+        description="1 if country ∈ ICP target countries, else 0.",
+    )
+    icp_non_free_mail: Optional[int] = Field(
+        default=None,
+        description="1 if email domain is NOT in free-mail providers list "
+                    "(gmail.com, yahoo.com, etc.), else 0.",
+    )
+    icp_composite_score: Optional[float] = Field(
+        default=None,
+        description="Composite ICP score ∈ [0, 100], sum of matched rule-points.",
+    )
+    icp_tier: Optional[Literal["A", "B", "C", "D"]] = Field(
+        default=None,
+        description="A/B/C/D tier assigned from composite_icp_score. "
+                    "≥80 → A, ≥60 → B, ≥40 → C, <40 → D.",
     )
 
 

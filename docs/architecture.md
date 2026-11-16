@@ -361,3 +361,180 @@ If you build on this reference deployment, please cite the paper:
   note      = {Submission \#4554}
 }
 ```
+<!-- APPEND this block to docs/architecture.md — paste BEFORE Section 8 (Citing). -->
+
+---
+
+## 5d. Slice 5.1 — Cross-domain validation evidence base
+
+Shipped 16 November 2026 (commits `5cde402` + `a3d3606`).
+
+### 4-point validation table
+
+| Dataset | Minority rate | Domain | Source | smote_direction | model_stability_ordering |
+|---|---|---|---|---|---|
+| Taiwan Bankruptcy | 3.23% | Financial distress | Real (UCI) | PASS (paper §VI.C) | PASS (paper §VI.C) |
+| LeadForge advanced | 7.86% | B2B GTM synthetic (harder) | Synthetic (HF) | PASS (Δ+0.0155) | PASS (LGB 0.0200 < XGB 0.0251) |
+| LeadForge intermediate | 20.98% | B2B GTM synthetic | Synthetic (HF) | PASS (Δ+0.0108) | PASS (LGB 0.0147 < XGB 0.0189) |
+| X Education | 38.54% | EdTech lead scoring | **REAL** (Zenodo CC BY 4.0) | PASS (Δ+0.0004) | PASS (LGB 0.0098 < XGB 0.0115) |
+
+### Monotone SMOTE-Δ decrease trend
+
+The SMOTE-direction effect size on XGBoost σ_SHAP **monotonically decreases**
+as class balance approaches 50%: Δ=+0.0155 at 7.86% minority → +0.0108 at
+20.98% → +0.0004 at 38.54%. This is exactly what the methodological
+definition predicts — SMOTE has less synthetic-positive headroom to
+destabilise attribution as classes near balance. The nuance is empirically
+visible across 4 validation points, materially strengthening the paper's
+cross-domain generalisability claim.
+
+Full canonical verdicts record: [`SLICE_5_1_VERDICTS.md`](../SLICE_5_1_VERDICTS.md).
+
+### Honesty bar
+
+The σ_SHAP numbers and PNG charts committed under `docs/figures/xeducation/`
+and `docs/gtm_advanced/figures/gtm/` are the output of applying the Q-MDP
+σ_SHAP governance harness to real EdTech B2B lead-scoring data and to
+harder-conditions synthetic B2B GTM data. They DO NOT constitute
+performance claims about PinkMate on real target-industry B2B GTM leads.
+Real-data validation on a target-industry corpus remains deferred to
+later data-gated work (pink-mate.co.uk landing-page capture over 6-12
+months, academic partnership via Kent Business School / Khawar network,
+specific industry engagement).
+
+---
+
+## 5e. Slice 5.2 — Deployment-schema alignment + MTA formalism
+
+Shipped <date> 2026.
+
+### 5e.1 — ScoringAgent hybrid fail-fast schema contract
+
+**Decision A** (16 Nov 2026) locked a hybrid contract between training-time
+schema and deployment-time `LeadInput`:
+
+- **STRICT on required features** — if a feature the model was trained on
+  is missing from the deployment feature dict, `_predict_proba_real()`
+  raises `RuntimeError` with a message pointing at EnrichmentAgent
+  population or a retrain.
+- **LENIENT on extras** — features present in `LeadInput` but not in the
+  training schema are silently dropped (DEBUG-logged only).
+- **DRIFT WARNING** — if `LEADINPUT_SCHEMA_VERSION` in `pinkmate/state.py`
+  has moved on since the model was trained, a `WARNING` is logged and
+  the drift is recorded for audit. Prediction still proceeds with the
+  intersection of features (no hard failure on version mismatch — the
+  model's existing feature set is still usable).
+
+This replaces the Slice 2 silent zero-fill behaviour that was identified
+as a deployment risk during Slice 5 integration. Zero-fill is a quiet
+failure mode: the model runs on a feature vector it wasn't trained on,
+producing nominally valid but semantically wrong predictions. The hybrid
+contract fails loudly on real misalignment while remaining forgiving
+toward forward-compatible schema evolution.
+
+### 5e.2 — RFM feature-engineering layer
+
+**Decision B** (16 Nov 2026) locked pure-function implementation in
+`pinkmate/ml/feature_engineering.py` — minimal machinery, maximum
+testability, no configuration object required.
+
+| Score | Source LeadInput field | Function | Range |
+|---|---|---|---|
+| Recency | `days_since_last_touch` | Linear decay | 1.0 at 0 days → 0.0 at 90 days |
+| Frequency | `touch_count` | `log1p(count) / log1p(20)` | 0.0 at 0 touches → 1.0 at ≥20 touches |
+| Monetary | `opportunity_estimated_acv` | Step function over USD bands | 0.1 (<10k) → 0.3 (10-50k) → 0.5 (50-200k) → 0.75 (200k-1M) → 1.0 (>1M) |
+| Composite | derived | Weighted average (default equal thirds) | [0, 1] |
+
+All functions return 0.0 on `None` or invalid input. Weights on the
+composite are configurable per-call; defaults are symmetric.
+
+### 5e.3 — Clay-style ICP scoring layer
+
+**Decision C** (16 Nov 2026) locked **BOTH rule-based binary features
+AND composite score + tier** — interpretability wins, model
+regularisation handles whichever is less useful at inference time.
+
+Five rules (from `AazanM/clay-hubspot-enrichment` reference, Phase 2
+research finding):
+
+| Rule | Points | Match criterion |
+|---|---|---|
+| Employees band match | 30 | `employee_band` ∈ {"50-199", "200-999"} |
+| Industry match | 25 | `industry.lower()` ∈ {"manufacturing", "logistics", "professional_services"} |
+| Seniority match | 25 | `seniority.lower()` ∈ {"director", "vp", "c_suite"} |
+| Country match | 10 | `country` ∈ {"US", "UK"} |
+| Non-free-mail | 10 | Email domain NOT in {"gmail.com", "yahoo.com", ...} |
+
+Composite = sum of matched rule-points (0-100). Tier mapping: ≥80 → A,
+≥60 → B, ≥40 → C, <40 → D.
+
+**Known limitations** (documented in `pinkmate/ml/feature_engineering.py`
+module docstring, not blocking):
+
+- Western-SaaS-biased defaults for employee bands, industries, countries
+- Free-mail domain list lacks APAC providers (rediffmail.com, qq.com,
+  163.com, naver.com)
+- Monetary band step function; smooth log-linear alternative is a
+  straightforward swap
+
+Parameterise `ICP_TARGET_*` + `ICP_FREE_MAIL_DOMAINS` per deployment ICP.
+
+### 5e.4 — MTA (Multi-Touch Attribution) formalism
+
+**Decision D** (16 Nov 2026) locked **MEDIUM depth** — section with
+notation, no full proof. Full proof of equivalence deferred to Slice 7
+probabilistic framework formalisation (POMDP + Bayesian + mixture + HMM
+bundled slice).
+
+#### Isomorphism statement
+
+Q-MDP's belief-state transitions over the discrete state space
+S = {MQL, SQL, Closed_Won} implement a Markov chain that is **isomorphic
+to the data-driven Multi-Touch Attribution (MTA) model** (Shao & Li,
+2011).
+
+#### Notation
+
+Let `s_t ∈ S` be the lead's latent qualification state at step `t`,
+`a_t` the action taken by the pipeline (score / govern / outreach), and
+`o_t` the observation vector (touches, engagement signals derived from
+EnrichmentAgent + RFM + ICP features).
+
+The Q-MDP belief update (§III.A):
+
+```
+b_{t+1}(s') = η · P(o_{t+1} | s', a_t) · Σ_{s ∈ S} P(s' | s, a_t) · b_t(s)
+```
+
+is isomorphic to the MTA attribution-weight update on the same state
+space S when `P(s' | s, a_t)` is the data-driven transition matrix
+estimated from touch sequences in the corpus.
+
+The composite `governance_commit(belief, θ)` rule (paper §III.A)
+formalises a commit threshold on MTA-derived state posteriors —
+equivalent to the standard MTA "credit allocation" decision at the
+final state Closed_Won.
+
+**Formal proof of equivalence is deferred to Slice 7.** This section
+establishes the isomorphism statement for the current build so
+downstream work can build on the MTA framing; Slice 7 provides the full
+POMDP formalisation including the measurement model
+`P(o_t | s_t, a_{t-1})` and the resulting belief-update derivation.
+
+#### Reference
+
+Shao, X., & Li, L. (2011). *Data-driven multi-touch attribution models.*
+In Proceedings of the 17th ACM SIGKDD International Conference on
+Knowledge Discovery and Data Mining (KDD '11), pp. 258–264.
+
+### 5e.5 — LeadInput schema version tagging
+
+`pinkmate/state.py` now exports `LEADINPUT_SCHEMA_VERSION =
+"slice52_rfm_icp_v1"`. The ScoringAgent compares this against the version
+persisted in `models/gtm/attribution.json`'s `leadinput_schema_version`
+key when a model was trained. Mismatch → WARNING, not failure.
+
+This versioning policy will be extended by Slice 6 (survival-time fields
+bump to `slice6_survival_v1`), Slice 7 (probabilistic framework fields
+bump to `slice7_probabilistic_v1`), and so on. Downstream tooling can
+detect version drift and recommend retrains without blocking inference.

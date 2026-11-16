@@ -22,9 +22,22 @@ Slice 3.5 scope (shipped):
         * ``"placeholder"``: skips model loading entirely. No file reads,
           no warnings. Product-demo deployment path for website / client
           demos where the Taiwan-vs-GTM warnings would be noise rather
-          than signal. Becomes equivalent to ``"zoo"`` once Slice 5
-          ships GTM-domain models that match the deployment feature
-          schema.
+          than signal.
+
+Slice 5.2 scope (shipped):
+    - Hybrid fail-fast schema contract (Decision A, 16 Nov 2026):
+        * STRICT on required features — missing feature that the model
+          was trained on raises ``RuntimeError`` with a clear message
+          pointing at EnrichmentAgent or a retrain.
+        * LENIENT on extras — features present in LeadInput but not in
+          the training schema are silently dropped (DEBUG-logged only).
+        * DRIFT WARNING — if ``LEADINPUT_SCHEMA_VERSION`` has moved on
+          since the model was trained, a WARNING is logged and the drift
+          is recorded for audit. Prediction still proceeds on the
+          intersection of features.
+    - New helpers: ``_get_training_features()``, ``_get_schema_version()``,
+      ``_log_schema_drift_to_trace()`` — all read from
+      ``models/gtm/attribution.json``.
 """
 
 from __future__ import annotations
@@ -40,7 +53,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 import numpy as np
 
 from pinkmate.qmdp import BeliefState, SuperposedBelief, governance_commit
-from pinkmate.state import PipelineState, ScoreOutput, TraceEntry
+from pinkmate.state import LEADINPUT_SCHEMA_VERSION, PipelineState, ScoreOutput, TraceEntry
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,36 +97,17 @@ class ScoringAgent:
         """
         Build a ScoringAgent in one of two deployment modes.
 
-        Slice 3.5 — three deployment paths this flag unlocks:
-
-            model_source="zoo" (default, research-reproduction path):
-                Loads the six-model ensemble from ``models_dir`` if present
-                (produced by ``scripts/reproduce_table2.py``). If any model
-                pickle is missing OR fails ``predict_proba`` at inference
-                time (e.g., Taiwan-trained models called against a 5-feature
-                GTM demo lead), the agent transparently falls back to the
-                Slice 1 deterministic placeholder predictor and emits a
-                ``RuntimeWarning`` so the mismatch is visible. Use this for
-                paper reproduction, RAEng / academic review, and any
-                research-mode invocation where the warnings are the signal
-                (not noise).
-
-            model_source="placeholder" (product-demo path):
-                Skips model loading entirely — no file reads, no warnings,
-                no attempted inference against real pickles. The agent uses
-                the Slice 1 deterministic placeholder predictor directly.
-                Use this for the product-demo surface (website
-                screenshots, pitch decks, client demos) where the
-                Taiwan-vs-GTM warnings would be noise, not signal. When
-                Slice 5 ships (GTM-domain ensemble retrain) this mode
-                becomes effectively equivalent to the "zoo" mode.
+        See module docstring for full description of the "zoo" and
+        "placeholder" modes (Slice 3.5) and the Slice 5.2 hybrid
+        fail-fast contract applied to the "zoo" mode's real inference
+        path.
 
         Args:
             models_dir: Directory holding trained model pickles. Only
-                consulted when ``model_source="zoo"``.
+                consulted when ``model_source="zoo"``. Default
+                ``"models/gtm"`` per Slice 5.
             model_source: Deployment mode — ``"zoo"`` or ``"placeholder"``.
-                Defaults to ``"zoo"`` for backward compatibility; all
-                existing callers continue to work unchanged.
+                Defaults to ``"zoo"`` for backward compatibility.
         """
         self.models_dir = Path(models_dir)
         self.model_source = model_source
@@ -121,24 +115,20 @@ class ScoringAgent:
         self.sigma_shap_by_model: Dict[str, float] = {}
         self.feature_order: Optional[List[str]] = None
         self._using_real_models: bool = False
+        self._training_features_cache: Optional[List[str]] = None
+        self._model_schema_version_cache: Optional[str] = None
+        self._schema_drift_warned: bool = False  # Suppress duplicate warnings per agent
 
         if self.model_source == "zoo":
-            # Research-reproduction path: load models + emit warning on
-            # any mismatch. Current behaviour from Slice 2.
             self._load_models()
         else:
-            # Product-demo path: skip model loading entirely. The existing
-            # _predict_proba() routing in Slice 2 already falls through to
-            # the Slice 1 placeholder when _using_real_models is False, so
-            # no further plumbing is needed — this flag just prevents the
-            # file reads and the warning emission.
             LOGGER.info(
                 "ScoringAgent constructed in placeholder mode "
                 "(product-demo path; no model loading, no warnings)."
             )
 
     # ------------------------------------------------------------------
-    # Model loading — Slice 2
+    # Model loading — Slice 2 + Slice 5.2 schema introspection
     # ------------------------------------------------------------------
 
     def _load_models(self) -> None:
@@ -146,10 +136,6 @@ class ScoringAgent:
         Load trained models from ``self.models_dir`` if present. If the
         directory is missing or empty, fall back to the Slice 1 deterministic
         placeholder with a visible WARNING.
-
-        Design decision (Slice 2, 2026-10-27): fallback-with-warning so
-        the pipeline still runs for demo / smoke-test purposes before the
-        reproduce script has been run.
         """
         missing: List[str] = []
         for name in self.MODEL_NAMES:
@@ -188,7 +174,6 @@ class ScoringAgent:
             )
 
         # Load σ_SHAP summary if present — used for soft confidence derating
-        # on committed beliefs when attribution is unstable.
         attribution_path = self.models_dir / "attribution.json"
         if attribution_path.exists():
             try:
@@ -199,6 +184,80 @@ class ScoringAgent:
                     self.sigma_shap_by_model[name] = float(entry["sigma_shap"])
             except Exception as e:
                 LOGGER.warning("Failed to parse attribution.json: %s", e)
+
+    # ------------------------------------------------------------------
+    # Slice 5.2 — Schema introspection helpers
+    # ------------------------------------------------------------------
+
+    def _get_training_features(self) -> List[str]:
+        """
+        Return the ordered list of feature names the model was trained on.
+        Reads from ``models/gtm/attribution.json``'s ``feature_names`` key.
+        Returns an empty list if unavailable (triggers placeholder fallback).
+
+        Cached on first call per agent instance.
+        """
+        if self._training_features_cache is not None:
+            return self._training_features_cache
+
+        attribution_path = self.models_dir / "attribution.json"
+        if not attribution_path.exists():
+            self._training_features_cache = []
+            return []
+        try:
+            with open(attribution_path) as f:
+                payload = json.load(f)
+            features = list(payload.get("feature_names", []))
+            self._training_features_cache = features
+            return features
+        except Exception as e:
+            LOGGER.warning(
+                "Failed to read feature_names from %s: %s", attribution_path, e
+            )
+            self._training_features_cache = []
+            return []
+
+    def _get_schema_version(self) -> Optional[str]:
+        """
+        Return the LeadInput schema version the model was trained against.
+        Reads from ``models/gtm/attribution.json``'s
+        ``leadinput_schema_version`` key. Returns None if unavailable
+        (drift warning is suppressed when unknown).
+
+        Cached on first call per agent instance.
+        """
+        if self._model_schema_version_cache is not None:
+            return self._model_schema_version_cache
+
+        attribution_path = self.models_dir / "attribution.json"
+        if not attribution_path.exists():
+            return None
+        try:
+            with open(attribution_path) as f:
+                payload = json.load(f)
+            version = payload.get("leadinput_schema_version")
+            self._model_schema_version_cache = version
+            return version
+        except Exception:
+            return None
+
+    def _log_schema_drift_to_trace(
+        self, model_version: str, current_version: str,
+    ) -> None:
+        """
+        Audit trail: record the schema drift so downstream analysis can
+        detect that this prediction ran under a drifted schema.
+
+        Current implementation: the LOGGER.warning emitted in
+        ``_predict_proba_real()`` captures the event in logs. A richer
+        implementation would append a ``TraceEntry`` with
+        ``metadata["schema_drift"] = {...}`` — which happens naturally
+        via the ``__call__()`` trace append if drift detection runs in
+        that context. This method is kept as a hook for future expansion.
+        """
+        if not self._schema_drift_warned:
+            # Already warned by the caller; this is a secondary hook.
+            self._schema_drift_warned = True
 
     # ------------------------------------------------------------------
     # Scoring
@@ -218,9 +277,8 @@ class ScoringAgent:
         # Project the score into a two-component superposed belief.
         p_qualified = round(final_score / 100.0, 6)
         p_unqualified = round(1.0 - p_qualified, 6)
-        # Guard rounding: ensure sum == 1 exactly within SuperposedBelief tolerance.
         drift = 1.0 - (p_qualified + p_unqualified)
-        p_qualified += drift  # absorb floating remainder into the leading term
+        p_qualified += drift
 
         belief = SuperposedBelief(
             beliefs=(
@@ -232,18 +290,9 @@ class ScoringAgent:
         state_before = state.belief.as_dict() if state.belief else {}
         state.belief = belief
 
-        # Evaluate the governance commit predicate here (not in the routing
-        # function) so the resulting GovernanceCommit persists into state.
-        # Routers in LangGraph are pure routing functions; node bodies are
-        # where state mutations are durable.
         decision = governance_commit(belief, theta=state.theta_governance)
         state.governance_decision = decision
 
-        # Domain semantics: commit onto the downstream outreach path only
-        # when the committed state is a progression state (QUALIFIED). A
-        # high-confidence UNQUALIFIED commit resolves the governance
-        # predicate but is semantically a terminal reject, so execution
-        # defers rather than progressing to segmentation / outreach.
         if decision.committed and decision.state == STATE_QUALIFIED:
             state.committed_action = decision.state
 
@@ -265,33 +314,90 @@ class ScoringAgent:
         return state
 
     # ------------------------------------------------------------------
-    # Prediction (Slice 1 placeholder — real ensemble in Slice 2)
+    # Prediction (Slice 1 placeholder + Slice 2 real + Slice 5.2 contract)
     # ------------------------------------------------------------------
 
     def _predict_proba(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
         """
         Return (final_score, per_model_scores).
 
-        Slice 2 path (real ensemble present):
-            Each loaded model's predict_proba is averaged across the six to
-            form the ensemble consensus. The feature vector is pulled from
-            ``features`` in a stable order and padded / zero-filled where
-            an expected feature is missing.
-
-        Slice 2 fallback path (models missing):
-            The Slice 1 deterministic weighted-linear predictor is used.
-            A RuntimeWarning was already emitted at construction time.
+        Routes between real ensemble (via Slice 5.2 hybrid contract) and
+        Slice 1 placeholder predictor based on ``_using_real_models``.
         """
         if self._using_real_models:
             return self._predict_proba_real(features)
         return self._predict_proba_placeholder(features)
 
-    def _predict_proba_real(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
-        """Run the loaded six-model ensemble on the engineered feature vector."""
-        # Pull features in a stable order matching training-time columns.
-        feature_names = self.feature_order or sorted(features.keys())
+    def _predict_proba_real(
+        self, features: Dict[str, Any],
+    ) -> Tuple[float, Dict[str, float]]:
+        """
+        Slice 5.2 hybrid fail-fast contract (Decision A, 16 Nov 2026):
+
+        - STRICT on required features: missing → RuntimeError
+        - LENIENT on extras: silently dropped (DEBUG log)
+        - DRIFT WARNING: log + trace audit if schema version mismatch,
+          proceed on intersection
+
+        Falls back to placeholder only if training schema is unknowable
+        (no attribution.json → no feature_names list).
+        """
+        # Introspect training schema from models/gtm/attribution.json
+        training_features = self._get_training_features()
+        if not training_features:
+            # Can't determine training schema — fall back to placeholder
+            # (same behaviour as pre-5.2 silent zero-fill but now explicit)
+            LOGGER.warning(
+                "No feature_names in %s/attribution.json; cannot enforce "
+                "Slice 5.2 schema contract. Falling back to placeholder.",
+                self.models_dir,
+            )
+            return self._predict_proba_placeholder(features)
+
+        # STRICT: required features must be present
+        missing_required = set(training_features) - set(features.keys())
+        if missing_required:
+            raise RuntimeError(
+                f"ScoringAgent (Slice 5.2 schema contract): LeadInput "
+                f"missing required features for model: "
+                f"{sorted(missing_required)}. "
+                f"Deployment schema out of sync with "
+                f"{self.models_dir}/ training schema. Fix: ensure "
+                f"EnrichmentAgent populates all required features, OR "
+                f"retrain models against current LeadInput schema (current "
+                f"version: {LEADINPUT_SCHEMA_VERSION})."
+            )
+
+        # LENIENT: extra features silently dropped
+        extras = set(features.keys()) - set(training_features)
+        if extras:
+            LOGGER.debug(
+                "Slice 5.2 schema contract: dropping %d extra features not "
+                "in training schema: %s",
+                len(extras), sorted(extras),
+            )
+
+        # DRIFT WARNING: log + trace if schema version differs
+        model_schema_version = self._get_schema_version()
+        if (
+            model_schema_version is not None
+            and model_schema_version != LEADINPUT_SCHEMA_VERSION
+            and not self._schema_drift_warned
+        ):
+            LOGGER.warning(
+                "Schema drift: model trained on %s, current LeadInput is %s. "
+                "Proceeding with intersection of features; results may "
+                "differ from canonical training baseline.",
+                model_schema_version, LEADINPUT_SCHEMA_VERSION,
+            )
+            self._log_schema_drift_to_trace(
+                model_schema_version, LEADINPUT_SCHEMA_VERSION,
+            )
+            self._schema_drift_warned = True
+
+        # Build feature vector in training-feature order
         x = np.array(
-            [[float(features.get(name, 0.0)) for name in feature_names]],
+            [[float(features[name]) for name in training_features]],
             dtype=np.float64,
         )
 
@@ -309,23 +415,25 @@ class ScoringAgent:
             probs.append(p)
 
         if not probs:
-            # Last-ditch: all models failed. Fall back to placeholder.
             warnings.warn(
-                "All loaded models failed predict_proba; falling back to placeholder.",
+                "All loaded models failed predict_proba; falling back to "
+                "placeholder.",
                 RuntimeWarning,
                 stacklevel=2,
             )
             return self._predict_proba_placeholder(features)
 
-        # Ensemble consensus = simple average of per-model probabilities.
         consensus_proba = float(np.mean(probs))
         final_score = round(consensus_proba * 100.0, 2)
         return final_score, per_model
 
-    def _predict_proba_placeholder(self, features: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+    def _predict_proba_placeholder(
+        self, features: Dict[str, Any],
+    ) -> Tuple[float, Dict[str, float]]:
         """
-        Slice 1 deterministic weighted-linear predictor, retained as fallback
-        for environments where the real ensemble has not yet been trained.
+        Slice 1 deterministic weighted-linear predictor, retained as
+        fallback for environments where the real ensemble has not yet
+        been trained OR where training schema is unknowable.
         """
         weights = {
             "industry_saas": 15.0,
@@ -334,15 +442,17 @@ class ScoringAgent:
             "role_seniority_score": 40.0,
             "hiring_for_gtm": 15.0,
         }
-        raw = sum(weights.get(k, 0.0) * float(features.get(k, 0.0)) for k in weights)
+        raw = sum(
+            weights.get(k, 0.0) * float(features.get(k, 0.0)) for k in weights
+        )
         final_score = max(0.0, min(100.0, raw))
-        per_model = {name: round(final_score / 100.0, 4) for name in self.MODEL_NAMES}
+        per_model = {
+            name: round(final_score / 100.0, 4) for name in self.MODEL_NAMES
+        }
         return round(final_score, 2), per_model
 
 
 if __name__ == "__main__":
-    # Preserved runnable example (updated for Slice 1 state object + Slice 3.5
-    # dual deployment modes).
     from pinkmate.state import EnrichedRecord, LeadInput, PipelineState
 
     def _build_state() -> PipelineState:

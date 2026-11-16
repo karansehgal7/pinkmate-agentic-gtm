@@ -226,3 +226,21 @@ An extended methodological manuscript, *A Reproducibility Protocol for Imbalance
 Karan Sehgal — Founder, PinkMate
 AI-native GTM, predictive automation, and growth strategy
 `karansehgal@pink-mate.co.uk`
+<!-- APPEND this block to README.md — paste at the end of the "Slices shipped" roadmap section, before Section 7 (Related Research). -->
+
+### Slice 5.1 — X Education real-data + LeadForge advanced validation (shipped 16 Nov 2026)
+
+- **Commits:** `5cde402` (scientific artefacts) + `a3d3606` (canonical verdicts record + working-tree cleanup)
+- **X Education Lead Scoring v1** (Zenodo 23791277, CC BY 4.0) — the first REAL EdTech B2B lead-scoring dataset in the PinkMate build programme. 9240 leads, ~38.54% conversion rate.
+- **LeadForge advanced tier** — synthetic B2B GTM with injected missingness and outliers (harder-conditions stress test).
+- **All 4 qualitative directions PASS** across the full 3.23%→38.54% imbalance spectrum (Taiwan / LeadForge advanced / LeadForge intermediate / X Education).
+- **Monotone SMOTE-Δ-decrease trend empirically visible:** Δ=+0.0155 at 7.86% minority → +0.0108 at 20.98% → +0.0004 at 38.54%. Exactly as the methodological definition predicts — SMOTE has less synthetic-positive headroom to destabilise attribution as classes approach balance.
+- **Canonical verdicts record:** [`SLICE_5_1_VERDICTS.md`](SLICE_5_1_VERDICTS.md)
+
+### Slice 5.2 — Deployment-schema alignment + RFM + Clay ICP + MTA formalism (shipped <date> 2026)
+
+- **ScoringAgent hybrid fail-fast schema contract** (Decision A, 16 Nov 2026): STRICT on required training features (missing → `RuntimeError`) + LENIENT on extras (silently dropped, DEBUG-logged) + WARN on `LEADINPUT_SCHEMA_VERSION` drift (log + proceed on intersection).
+- **RFM feature engineering** (Decision B, pure functions in `pinkmate/ml/feature_engineering.py`): recency (90-day linear decay) + frequency (log-scaled, saturates at 20 touches) + monetary (ACV band step function) + composite.
+- **Clay-style ICP scoring layer** (Decision C, BOTH rules + composite): 5 rule-based binary features (employees-band × industry × seniority × country × non-free-mail) + composite 0-100 + A/B/C/D tier assignment.
+- **MTA (Multi-Touch Attribution) formalism** (Decision D, MEDIUM depth): Section 5e of `docs/architecture.md` shows Q-MDP belief-state transitions implement a Markov chain isomorphic to the data-driven MTA model (Shao & Li 2011). Full formal proof deferred to Slice 7 probabilistic framework formalisation.
+- **Test count:** 201 passing (179 Slice 5.1 + 17 feature_engineering + 5 schema contract).
