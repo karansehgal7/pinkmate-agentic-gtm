@@ -244,3 +244,13 @@ AI-native GTM, predictive automation, and growth strategy
 - **Clay-style ICP scoring layer** (Decision C, BOTH rules + composite): 5 rule-based binary features (employees-band × industry × seniority × country × non-free-mail) + composite 0-100 + A/B/C/D tier assignment.
 - **MTA (Multi-Touch Attribution) formalism** (Decision D, MEDIUM depth): Section 5e of `docs/architecture.md` shows Q-MDP belief-state transitions implement a Markov chain isomorphic to the data-driven MTA model (Shao & Li 2011). Full formal proof deferred to Slice 7 probabilistic framework formalisation.
 - **Test count:** 201 passing (179 Slice 5.1 + 17 feature_engineering + 5 schema contract).
+<!-- APPEND this block to README.md at the end of the roadmap bullets section. -->
+
+### Slice 5.3 — σ_calibration governance sibling (shipped <date> 2026)
+
+- **σ_calibration** = calibration-stability companion to σ_SHAP attribution-stability. Both measured under the SAME K-rotation protocol (K=50 default, matching paper §V canonical).
+- **Research question answered:** does σ_calibration correlate with σ_SHAP? Spearman correlation reported in `docs/sigma_calibration_report.md` with 95% bootstrap CI — either positive (cheap-proxy hypothesis supported), negative (opposing failure modes), or null (complementary signals; both must be reported).
+- **Three properties enforced by tests** (`tests/test_calibration_variance.py`): (1) Bounded σ ∈ [0, 0.5]; (2) K-stable (σ at K=50 within noise of σ at K=10); (3) Reproducible (same seed → identical σ).
+- **New module:** `pinkmate/ml/calibration_variance.py` — sibling to `attribution.py`, same API shape (`sigma_calibration` / `compute_rotated_calibration_variance` mirror `sigma_shap` / `compute_rotated_shap_variance`).
+- **Measurement script:** `scripts/measure_sigma_calibration.py` — reuses Slice 5/5.1 trained model pickles across the 4 cross-domain validation datasets (Taiwan + LeadForge advanced/intermediate + X Education), no retraining required.
+- **Test count:** 241 passing (215 Slice 5.2 baseline + 26 calibration variance tests).
