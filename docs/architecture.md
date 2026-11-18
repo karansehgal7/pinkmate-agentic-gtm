@@ -260,7 +260,182 @@ This matches Slice 2's framing â€” the paper validates the framework on Tai
 
 ---
 
-## 6. Slice roadmap
+<!-- APPEND this block to docs/architecture.md. -->
+<!-- Insert BEFORE the current "## 6. Slice roadmap" (which gets renamed to ## 7 as part of Step 4a in SLICE_6_INTEGRATION.md). -->
+<!-- After insertion, the file layout is:
+       ## 5a-5g (classification ensemble evidence line)
+       ## 6. Survival analysis extension (Slice 6)      <- this new section
+       ## 7. Slice roadmap                              (was ## 6)
+       ## 8. Running the pipeline                       (was ## 7)
+       ## 9. Citing                                     (was ## 8)
+-->
+
+---
+
+## 6. Survival analysis extension (Slice 6)
+
+Shipped <date> 2026.
+
+### 6.1 Why a top-level section rather than Â§5h
+
+Slices 5a-5g are operational and evidence extensions of the SAME
+classification ensemble + governance contract: same `predict_proba` target,
+same binary cross-entropy loss, same attribution structure (class-probability
+gradient magnitudes). Slice 6 introduces:
+
+- A different prediction target: `predict_cumulative_hazard(X, t)` and
+  `predict_survival_function(X, t)`, both indexed by time.
+- A different loss family: Cox partial likelihood (semi-parametric),
+  Weibull / LogNormal / LogLogistic parametric AFT, XGBoost
+  `survival:cox` custom objective, LightGBM AFT-style log-time regression.
+- A different attribution structure: SurvSHAP on hazard gradients at a
+  fixed time grid, aggregated over K rotated backgrounds.
+- A different regulatory body of standards: Bank of England PRA SS1/23 and
+  FS2/24 model-risk-management guidance explicitly reference survival
+  analysis as a credit-risk-adjacent methodology.
+
+For these reasons Slice 6 is reported as a new top-level Â§6 rather than
+appended under Â§5. Future methodological jumps (Slice 7's POMDP
+formalization, Slice 7.5's conformal prediction overlay) will follow
+the same pattern.
+
+### 6.2 Six-model survival ensemble (Decision A=3)
+
+Unified `_BaseSurvivalWrapper` interface over four libraries:
+
+| Model key         | Library       | Family                                     | Role                           |
+|-------------------|---------------|--------------------------------------------|--------------------------------|
+| `cox_ph`          | lifelines     | Semi-parametric (Cox partial likelihood)   | PRIMARY. BoE/PRA convention.   |
+| `weibull_aft`     | lifelines     | Parametric AFT, monotone hazard            | Reliability engineering std    |
+| `lognormal_aft`   | lifelines     | Parametric AFT, non-monotone hazard        | Pharma survival std            |
+| `loglogistic_aft` | lifelines     | Parametric AFT, non-monotone hazard        | Mortality modelling            |
+| `xgb_survival`    | XGBoost       | Gradient-boosted Cox (`survival:cox`)      | Ensemble member, non-linear    |
+| `lgb_aft`         | LightGBM      | Log-time regression (AFT-style)            | Ensemble member, non-linear    |
+
+ExponentialAFT with covariates is NOT included because lifelines >=0.30
+does not ship `ExponentialAFTFitter` (only univariate `ExponentialFitter`
+and `PiecewiseExponentialRegressionFitter` exist). WeibullAFT's shape
+parameter approaching 1 is the AFT equivalent â€” the training report
+surfaces this shape parameter explicitly for diagnostic purposes.
+
+Every wrapper exposes the same interface:
+
+```python
+fit(X, time, event) -> self
+predict_survival_function(X, times) -> ndarray (n, len(times))
+predict_cumulative_hazard(X, times) -> ndarray (n, len(times))
+predict_median_survival_time(X) -> ndarray (n,)
+concordance_index(X, time, event) -> float
+log_likelihood() -> float
+aic() -> float
+```
+
+### 6.3 Time + event construction on LeadForge (Decision B=3)
+
+LeadForge has `touch_count`, `days_since_last_touch`, and binary
+`converted` columns but no native `days_since_first_touch`. The
+`transform_leadforge_to_survival` function constructs the survival schema
+via:
+
+```
+days_since_first_touch = touch_count * touch_interval_days
+                         + days_since_last_touch
+time  = min(days_since_first_touch, max_followup_days)
+event = (converted == 1) AND (time <= max_followup_days)
+```
+
+Defaults: `max_followup_days = 90` (matches LeadForge 90-day sales-cycle
+convention), `touch_interval_days = 7.0` (weekly cadence assumption).
+
+Honesty bar baked into every training run: a sensitivity sweep over
+`touch_interval_days âˆˆ {5.0, 7.0, 14.0}` is reported, and the Ïƒ_SHAP
+transfer verdict is only considered valid if it is stable across that range.
+
+### 6.4 SurvSHAP attribution (Decision C=1)
+
+Primary backend: KrzyziÅ„ski, Spytek, Baniecki, Biecek (2023)
+`survshap` package. Falls back to finite-difference cumulative-hazard
+attribution when `survshap` cannot import or does not support a given
+model wrapper (XGBoost survival:cox and LightGBM AFT wrappers use the
+fallback by default because they expose non-standard prediction
+interfaces).
+
+Ïƒ_SHAP on hazard outputs uses the SAME paper Â§V rotated-background
+protocol as classification Ïƒ_SHAP and Slice 5.3 Ïƒ_calibration:
+
+```
+sigma_SHAP_hazard = sqrt( (1/m) * sum_j Var_k( |phi_{j,k,hazard}| ) )
+```
+
+where Ï†_{j,k,hazard} is the mean-abs SurvSHAP attribution for feature j
+on the reference set under background k, averaged over the time grid
+`(30, 60, 90)` days (monthly points inside the 90-day censoring window).
+
+### 6.5 Three research questions (Slice 6 headline)
+
+1. **Does Ïƒ_SHAP transfer from classification to survival?**
+   Spearman rank correlation + 95% bootstrap CI between classification
+   Ïƒ_SHAP (loaded from Slice 5.1 `attribution.json` files) and survival
+   Ïƒ_SHAP across matched model family pairs:
+   `xgboost -> xgb_survival`, `lightgbm -> lgb_aft`,
+   `random_forest -> cox_ph`, etc. Positive CI: transfer works
+   (attribution-stability is a model-level property, not target-specific).
+   Null CI: complementary signals, report both. Negative CI: opposing
+   behaviours, flag for investigation.
+
+2. **Is Cox PH Ïƒ_SHAP lower than Weibull Ïƒ_SHAP?**
+   Direct comparison in the per-model Ïƒ_SHAP table. Hypothesis:
+   semi-parametric Cox (no distributional assumption on baseline hazard)
+   should be more attribution-stable than parametric Weibull (commits to
+   a shape parameter). Verdict reported honestly whichever way it lands.
+
+3. **Which parametric distribution fits LeadForge best?**
+   AIC ranking + log-likelihood comparison over `{weibull_aft,
+   lognormal_aft, loglogistic_aft}`. Best-fitting family informs the
+   choice of parametric baseline if Cox PH itself is unavailable in a
+   deployment setting.
+
+### 6.6 API shape (sibling to attribution.py and calibration_variance.py)
+
+```python
+from pinkmate.ml.survival import build_survival_model, fit_model
+from pinkmate.ml.survival_data import transform_leadforge_to_survival
+from pinkmate.ml.survival_attribution import compute_rotated_survshap_variance
+
+sf = transform_leadforge_to_survival(leadforge_df)
+model = build_survival_model("cox_ph").fit(sf.X, sf.time, sf.event)
+attr = compute_rotated_survshap_variance(
+    model=model,
+    model_key="cox_ph",
+    X_train=sf.X,
+    X_reference=sf.X.iloc[:200],
+    feature_names=sf.feature_names,
+    k_backgrounds=50,
+)
+# attr.sigma_shap_hazard, attr.per_feature_variance, attr.time_grid, ...
+```
+
+Signatures mirror `pinkmate.ml.attribution.compute_rotated_shap_variance`
+and `pinkmate.ml.calibration_variance.compute_rotated_calibration_variance`
+to make the sibling structure explicit across modules.
+
+### 6.7 What Slice 6 does NOT claim
+
+- Ïƒ_SHAP transfer is a stability claim, not a prediction-quality claim.
+  A model can have stable attribution and still be poorly discriminative.
+  Concordance index, log-likelihood, and AIC are reported alongside Ïƒ_SHAP
+  for the full picture.
+- The LeadForge survival analysis is on SYNTHETIC time construction
+  (Decision B=3). Real-time-to-conversion data is deferred to Slice 8+
+  pending an external dataset (pink-mate.co.uk landing-page capture OR
+  academic partnership).
+- Bank of England PRA SS1/23 alignment is methodological signalling, not
+  a certification claim. PinkMate is not a regulated model; the Cox PH
+  primary choice establishes vocabulary compatibility for future BoE /
+  PRA / FCA agentic-AI evidence-pack conversations.
+
+
+## 7. Slice roadmap
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
 - **Slice 2 (shipped):** Imbalance-aware ML layer â€” six-model ensemble (Â§III.D), SMOTE (Â§III.C), TreeSHAP + Ïƒ_SHAP measurement (Â§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (Ïƒ_SHAP Â±0.005, recall Â±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
@@ -273,7 +448,7 @@ This matches Slice 2's framing â€” the paper validates the framework on Tai
 
 ---
 
-## 7. Running the pipeline
+## 8. Running the pipeline
 
 ### Smoke-test the Q-MDP orchestration layer (fast, no ML training required)
 
@@ -347,7 +522,7 @@ Current totals: Slice 1 Q-MDP + pipeline tests + Slice 2 ML + integration tests.
 
 ---
 
-## 8. Citing
+## 9. Citing
 
 If you build on this reference deployment, please cite the paper:
 

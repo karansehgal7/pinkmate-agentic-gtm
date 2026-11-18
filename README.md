@@ -254,3 +254,14 @@ AI-native GTM, predictive automation, and growth strategy
 - **New module:** `pinkmate/ml/calibration_variance.py` — sibling to `attribution.py`, same API shape (`sigma_calibration` / `compute_rotated_calibration_variance` mirror `sigma_shap` / `compute_rotated_shap_variance`).
 - **Measurement script:** `scripts/measure_sigma_calibration.py` — reuses Slice 5/5.1 trained model pickles across the 4 cross-domain validation datasets (Taiwan + LeadForge advanced/intermediate + X Education), no retraining required.
 - **Test count:** 241 passing (215 Slice 5.2 baseline + 26 calibration variance tests).
+<!-- APPEND this block to README.md at the end of the roadmap bullets section. -->
+
+### Slice 6 — Survival analysis extension (shipped <date> 2026)
+
+- **σ_SHAP transfer research question answered:** does attribution-stability transfer from classification (`predict_proba`) to survival (`predict_cumulative_hazard`)? Reported in `docs/survival_training_report.md` via Spearman rank correlation between Slice 5.1 classification σ_SHAP and new survival σ_SHAP, with 95% bootstrap CI.
+- **6-model survival ensemble:** Cox PH (primary, semi-parametric) + 3 parametric AFT families (Weibull, LogNormal, LogLogistic) + XGBoost `survival:cox` + LightGBM AFT (log-time regression). Unified wrapper interface in `pinkmate/ml/survival.py` so the training harness treats all models identically regardless of backing library.
+- **SurvSHAP attribution** via the Krzyziński et al. 2023 package, with a finite-difference cumulative-hazard fallback when `survshap` is unavailable. Mirrors `pinkmate/ml/attribution.py` API — `sigma_shap_hazard` + `compute_rotated_survshap_variance` match the sibling conventions established in Slice 5.3.
+- **LeadForge → survival schema transform** (`pinkmate/ml/survival_data.py`) constructs `(time, event)` from LeadForge's `touch_count` + `days_since_last_touch` + `converted` columns via Decision B=3. Honesty bar surfaced in every training-report run: time construction is synthetic, verdict stability is enforced across touch-interval sensitivity sweep (5 / 7 / 14 days).
+- **Bank of England credit-risk alignment:** Cox PH is the PRA SS1/23 model-risk-management convention for survival-style credit-risk modelling. Shipping σ_SHAP on both semi-parametric (Cox) and parametric (Weibull / LogN / LogL) families gives the RAEng Route 4 evidence pack a regulatory-adjacent methodology line.
+- **Dependencies added to `requirements.txt`:** `lifelines>=0.27.0`, `scikit-survival>=0.22.0`, `survshap>=0.4.0`.
+- **Test count:** 303 passing (241 Slice 5.3 baseline + 62 new survival tests across `test_survival.py` 24 + `test_survival_attribution.py` 15 + `test_survival_data.py` 23).
