@@ -265,9 +265,132 @@ This matches Slice 2's framing â€” the paper validates the framework on Tai
 <!-- After insertion, the file layout is:
        ## 5a-5g (classification ensemble evidence line)
        ## 6. Survival analysis extension (Slice 6)      <- this new section
-       ## 7. Slice roadmap                              (was ## 6)
-       ## 8. Running the pipeline                       (was ## 7)
-       ## 9. Citing                                     (was ## 8)
+       <!-- APPEND this block to docs/architecture.md. -->
+<!-- Insert BEFORE the current "## 7. Slice roadmap" (which gets renamed to ## 8 as part of Step 4a). -->
+<!-- After insertion, the file layout is:
+       ## 5a-5g (classification ensemble evidence line)
+       ## 6. Survival analysis extension (Slice 6)
+       ## 7. Probabilistic framework formalisation (Slice 7)   <- this new section
+       ## 8. Slice roadmap                                     (was ## 7)
+       ## 9. Running the pipeline                              (was ## 8)
+       ## 10. Citing                                           (was ## 9)
+-->
+
+---
+
+## 7. Probabilistic framework formalisation (Slice 7)
+
+Shipped 18 November 2026.
+
+### 7.1 Why a top-level section (not sub-slice under Section 5 or 6)
+
+Slice 7 is a **theoretical scaffolding slice**, not evidence or survival
+extension. It formalises the mathematical objects that Slices 1-6
+operationalised and makes them cite-able in the paper's Theoretical
+Foundations rewrite. Per the methodological-jump pattern established for
+Slice 6: fresh theoretical scaffolding â†’ new top-level section. Existing
+Â§7 / Â§8 / Â§9 renumber to Â§8 / Â§9 / Â§10 to make room.
+
+### 7.2 POMDP formal mapping (Littman, Cassandra & Kaelbling 1995)
+
+`pinkmate/qmdp_formal.py` provides the canonical POMDP tuple
+`(S, A, T, O, R, Î³)`, the Bayesian belief filter (predictive step + 
+observation step + normalisation), and the Q-MDP commit rule
+`Ï€_QMDP(b) = argmax_a Î£_s b(s) Â· Q_MDP(s, a)`.
+
+The module proves two isomorphisms via `tests/test_qmdp_formal.py`:
+
+1. `pinkmate/qmdp.py::SuperposedBelief` (dict representation) IS a POMDP
+   belief distribution (ndarray representation). The adapter
+   `pinkmate_superposed_belief_as_pomdp_belief()` is a shape conversion,
+   not a mathematical change.
+2. `SuperposedBelief.governance_commit(Î¸)` IS a degenerate Q-MDP commit
+   over `A' = {commit, defer}` where `Q_MDP(s, commit) âˆ ðŸ™[max_s b(s) â‰¥ Î¸]`.
+
+This isomorphism is the formal justification for citing Littman et al. 1995
+in the paper's Theoretical Foundations section.
+
+### 7.3 Hidden Markov Model (Rabiner 1989)
+
+`pinkmate/ml/hmm_belief.py` wraps `hmmlearn.CategoricalHMM` with a
+PinkMate-flavoured API: latent states `{MQL, SQL, ClosedWon}`, discretised
+touch-count observations, Viterbi decoding, forward-backward smoothing,
+Baum-Welch re-estimation.
+
+An HMM is a POMDP with `|A| = 1` and `R â‰¡ 0` â€” the agent has no choice,
+only observes the latent-state trajectory. This reduction is useful for
+batch post-hoc analytics on historical touch sequences, complementing the
+live governance loop (which does have actions and uses the full POMDP).
+
+Default parameters encode PinkMate's prior: slow left-to-right transition
+(`p_self = 0.7`, `p_forward = 0.3`) with absorbing final state;
+emission matrix biases higher states to emit more touches on average.
+Overridable via Baum-Welch EM re-estimation (`LatentStateHMM.fit()`) once
+real touch-sequence data accumulates.
+
+### 7.4 Bayesian Weibull survival (Gelman et al. 2013)
+
+`pinkmate/ml/bayesian_survival.py` adds posterior inference on the Slice 6
+Weibull AFT parameters via PyMC 5.x+ NUTS sampling. Priors:
+`shape ~ HalfNormal(2.0)`, `scale ~ HalfNormal(2 Â· max t)`. Likelihood
+hand-rolled with right-censoring: `log pdf` for events, `log S(t)` for
+censored observations, summed via `pm.Potential`.
+
+Primary output: posterior-predictive 95% credible intervals on
+`S(t) = P(T > t)` at caller-specified times. This is **stronger than
+Slice 6's point-estimate Weibull AFT** because it quantifies parameter
+uncertainty â€” for regulatory evidence lines, "P(convert by day 30) is
+0.42 with 95% CI [0.35, 0.49]" is more defensible than a single point.
+
+Diagnostics: R-hat (Gelman-Rubin) and ESS (Effective Sample Size) via
+arviz, surfaced on the result dataclass.
+
+### 7.5 Weibull mixture for latent buyer regimes (McLachlan & Peel 2000)
+
+`pinkmate/ml/mixture_survival.py` fits a `K`-component Weibull mixture
+to right-censored survival data via the EM algorithm. Each component
+corresponds to a latent buyer regime â€” typically a fast-converter regime
+(low scale, high shape) and a slow-converter regime (high scale, moderate
+shape) at K=2.
+
+E-step uses responsibilities with right-censoring contributions. M-step
+uses weighted MLE via Nelder-Mead (scipy.optimize) on the weighted
+log-likelihood. Convergence: `|Î”L| < 10^{-5}` or 200 iterations.
+
+**Decision C (17 Nov 2026):** K selected by BIC sweep across K âˆˆ {2, 3, 4}
+via `select_k_by_bic`. Not committed to K=2 upfront (avoids overfitting
+the "fast vs slow converters" narrative); not non-parametric (Dirichlet
+Process would be Slice 8+ complexity).
+
+### 7.6 Four locked decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| A: Bayesian engine | PyMC â‰¥5.0 (not NumPyro) | Maturity + Windows compatibility; NumPyro migration can be Slice 8+ if speed becomes bottleneck |
+| B: MCMC sampler | NUTS (PyMC default) | Standard in Bayesian survival; R-hat + ESS diagnostics well-understood; Variational ADVI sacrifices exactness we don't need |
+| C: Mixture K | BIC sweep K âˆˆ {2, 3, 4} | Not upfront commitment to K=2; not Dirichlet Process overkill |
+| D: HMM library | hmmlearn â‰¥0.3, 3 states | hmmlearn maturity + sklearn-style API; 3 states matches paper's belief-state terminology |
+
+### 7.7 What Slice 7 does NOT do
+
+- **Does not change the production governance path.** `ScoringAgent` and
+  `workflows/pipeline.py` continue to use the Slice 1 `pinkmate/qmdp.py`
+  primitives. Slice 7 is formal grounding, not a replacement.
+- **Does not retrain Slice 6 survival models.** Bayesian Weibull and
+  Weibull mixture are additional estimators alongside the Slice 6
+  ensemble, not substitutes.
+- **Does not rewrite the paper's Section III.A.** That's queued as part of
+  the coordinated paper revisions pass. The module code and
+  `docs/probabilistic_framework.md` are the SOURCE MATERIAL for the paper
+  rewrite; the rewrite itself is a separate deliverable.
+
+For the one-stop theoretical reference with full math derivations, see
+`docs/probabilistic_framework.md`.
+
+
+## 8. Slice roadmap                              (was ## 6)
+       ## 9. Running the pipeline                       (was ## 7)
+       ## 10. Citing                                     (was ## 8)
 -->
 
 ---
@@ -435,7 +558,130 @@ to make the sibling structure explicit across modules.
   PRA / FCA agentic-AI evidence-pack conversations.
 
 
-## 7. Slice roadmap
+<!-- APPEND this block to docs/architecture.md. -->
+<!-- Insert BEFORE the current "## 7. Slice roadmap" (which gets renamed to ## 8 as part of Step 4a). -->
+<!-- After insertion, the file layout is:
+       ## 5a-5g (classification ensemble evidence line)
+       ## 6. Survival analysis extension (Slice 6)
+       ## 7. Probabilistic framework formalisation (Slice 7)   <- this new section
+       ## 8. Slice roadmap                                     (was ## 7)
+       ## 9. Running the pipeline                              (was ## 8)
+       ## 10. Citing                                           (was ## 9)
+-->
+
+---
+
+## 7. Probabilistic framework formalisation (Slice 7)
+
+Shipped 18 November 2026.
+
+### 7.1 Why a top-level section (not sub-slice under Section 5 or 6)
+
+Slice 7 is a **theoretical scaffolding slice**, not evidence or survival
+extension. It formalises the mathematical objects that Slices 1-6
+operationalised and makes them cite-able in the paper's Theoretical
+Foundations rewrite. Per the methodological-jump pattern established for
+Slice 6: fresh theoretical scaffolding â†’ new top-level section. Existing
+Â§7 / Â§8 / Â§9 renumber to Â§8 / Â§9 / Â§10 to make room.
+
+### 7.2 POMDP formal mapping (Littman, Cassandra & Kaelbling 1995)
+
+`pinkmate/qmdp_formal.py` provides the canonical POMDP tuple
+`(S, A, T, O, R, Î³)`, the Bayesian belief filter (predictive step + 
+observation step + normalisation), and the Q-MDP commit rule
+`Ï€_QMDP(b) = argmax_a Î£_s b(s) Â· Q_MDP(s, a)`.
+
+The module proves two isomorphisms via `tests/test_qmdp_formal.py`:
+
+1. `pinkmate/qmdp.py::SuperposedBelief` (dict representation) IS a POMDP
+   belief distribution (ndarray representation). The adapter
+   `pinkmate_superposed_belief_as_pomdp_belief()` is a shape conversion,
+   not a mathematical change.
+2. `SuperposedBelief.governance_commit(Î¸)` IS a degenerate Q-MDP commit
+   over `A' = {commit, defer}` where `Q_MDP(s, commit) âˆ ðŸ™[max_s b(s) â‰¥ Î¸]`.
+
+This isomorphism is the formal justification for citing Littman et al. 1995
+in the paper's Theoretical Foundations section.
+
+### 7.3 Hidden Markov Model (Rabiner 1989)
+
+`pinkmate/ml/hmm_belief.py` wraps `hmmlearn.CategoricalHMM` with a
+PinkMate-flavoured API: latent states `{MQL, SQL, ClosedWon}`, discretised
+touch-count observations, Viterbi decoding, forward-backward smoothing,
+Baum-Welch re-estimation.
+
+An HMM is a POMDP with `|A| = 1` and `R â‰¡ 0` â€” the agent has no choice,
+only observes the latent-state trajectory. This reduction is useful for
+batch post-hoc analytics on historical touch sequences, complementing the
+live governance loop (which does have actions and uses the full POMDP).
+
+Default parameters encode PinkMate's prior: slow left-to-right transition
+(`p_self = 0.7`, `p_forward = 0.3`) with absorbing final state;
+emission matrix biases higher states to emit more touches on average.
+Overridable via Baum-Welch EM re-estimation (`LatentStateHMM.fit()`) once
+real touch-sequence data accumulates.
+
+### 7.4 Bayesian Weibull survival (Gelman et al. 2013)
+
+`pinkmate/ml/bayesian_survival.py` adds posterior inference on the Slice 6
+Weibull AFT parameters via PyMC 5.x+ NUTS sampling. Priors:
+`shape ~ HalfNormal(2.0)`, `scale ~ HalfNormal(2 Â· max t)`. Likelihood
+hand-rolled with right-censoring: `log pdf` for events, `log S(t)` for
+censored observations, summed via `pm.Potential`.
+
+Primary output: posterior-predictive 95% credible intervals on
+`S(t) = P(T > t)` at caller-specified times. This is **stronger than
+Slice 6's point-estimate Weibull AFT** because it quantifies parameter
+uncertainty â€” for regulatory evidence lines, "P(convert by day 30) is
+0.42 with 95% CI [0.35, 0.49]" is more defensible than a single point.
+
+Diagnostics: R-hat (Gelman-Rubin) and ESS (Effective Sample Size) via
+arviz, surfaced on the result dataclass.
+
+### 7.5 Weibull mixture for latent buyer regimes (McLachlan & Peel 2000)
+
+`pinkmate/ml/mixture_survival.py` fits a `K`-component Weibull mixture
+to right-censored survival data via the EM algorithm. Each component
+corresponds to a latent buyer regime â€” typically a fast-converter regime
+(low scale, high shape) and a slow-converter regime (high scale, moderate
+shape) at K=2.
+
+E-step uses responsibilities with right-censoring contributions. M-step
+uses weighted MLE via Nelder-Mead (scipy.optimize) on the weighted
+log-likelihood. Convergence: `|Î”L| < 10^{-5}` or 200 iterations.
+
+**Decision C (17 Nov 2026):** K selected by BIC sweep across K âˆˆ {2, 3, 4}
+via `select_k_by_bic`. Not committed to K=2 upfront (avoids overfitting
+the "fast vs slow converters" narrative); not non-parametric (Dirichlet
+Process would be Slice 8+ complexity).
+
+### 7.6 Four locked decisions
+
+| Decision | Choice | Rationale |
+|---|---|---|
+| A: Bayesian engine | PyMC â‰¥5.0 (not NumPyro) | Maturity + Windows compatibility; NumPyro migration can be Slice 8+ if speed becomes bottleneck |
+| B: MCMC sampler | NUTS (PyMC default) | Standard in Bayesian survival; R-hat + ESS diagnostics well-understood; Variational ADVI sacrifices exactness we don't need |
+| C: Mixture K | BIC sweep K âˆˆ {2, 3, 4} | Not upfront commitment to K=2; not Dirichlet Process overkill |
+| D: HMM library | hmmlearn â‰¥0.3, 3 states | hmmlearn maturity + sklearn-style API; 3 states matches paper's belief-state terminology |
+
+### 7.7 What Slice 7 does NOT do
+
+- **Does not change the production governance path.** `ScoringAgent` and
+  `workflows/pipeline.py` continue to use the Slice 1 `pinkmate/qmdp.py`
+  primitives. Slice 7 is formal grounding, not a replacement.
+- **Does not retrain Slice 6 survival models.** Bayesian Weibull and
+  Weibull mixture are additional estimators alongside the Slice 6
+  ensemble, not substitutes.
+- **Does not rewrite the paper's Section III.A.** That's queued as part of
+  the coordinated paper revisions pass. The module code and
+  `docs/probabilistic_framework.md` are the SOURCE MATERIAL for the paper
+  rewrite; the rewrite itself is a separate deliverable.
+
+For the one-stop theoretical reference with full math derivations, see
+`docs/probabilistic_framework.md`.
+
+
+## 8. Slice roadmap
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
 - **Slice 2 (shipped):** Imbalance-aware ML layer â€” six-model ensemble (Â§III.D), SMOTE (Â§III.C), TreeSHAP + Ïƒ_SHAP measurement (Â§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (Ïƒ_SHAP Â±0.005, recall Â±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
@@ -448,7 +694,7 @@ to make the sibling structure explicit across modules.
 
 ---
 
-## 8. Running the pipeline
+## 9. Running the pipeline
 
 ### Smoke-test the Q-MDP orchestration layer (fast, no ML training required)
 
@@ -522,7 +768,7 @@ Current totals: Slice 1 Q-MDP + pipeline tests + Slice 2 ML + integration tests.
 
 ---
 
-## 9. Citing
+## 10. Citing
 
 If you build on this reference deployment, please cite the paper:
 

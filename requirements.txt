@@ -25,3 +25,6 @@ pytest
 lifelines>=0.27.0
 scikit-survival>=0.22.0
 survshap>=0.4.0
+
+pymc>=5.0.0
+hmmlearn>=0.3.0
