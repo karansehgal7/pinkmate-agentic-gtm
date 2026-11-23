@@ -48,6 +48,8 @@ pinkmate-agentic-gtm/
 │   ├─ __init__.py
 │   ├─ qmdp.py                        # Belief state, superposed belief, governance
 │   │                                 # commit predicate (paper §III.A) — Slice 1
+│   ├─ qmdp_formal.py                 # POMDP tuple + Bayesian belief filter +
+│   │                                 # Q-MDP commit (Littman 1995) — Slice 7
 │   ├─ state.py                       # Pydantic PipelineState + τ_exec trace (§III.A)
 │   │                                 # + LEADINPUT_SCHEMA_VERSION constant (Slice 5.2)
 │   ├─ persistence.py                 # Checkpointer factory — MemorySaver | SqliteSaver
@@ -69,7 +71,10 @@ pinkmate-agentic-gtm/
 │       ├─ calibration_variance.py    # σ_calibration sibling to σ_SHAP — Slice 5.3
 │       ├─ survival.py                # 6-model survival ensemble — Slice 6
 │       ├─ survival_data.py           # LeadForge → survival schema transform — Slice 6
-│       └─ survival_attribution.py    # SurvSHAP + σ_SHAP_hazard — Slice 6
+│       ├─ survival_attribution.py    # SurvSHAP + σ_SHAP_hazard — Slice 6
+│       ├─ hmm_belief.py              # 3-state LatentStateHMM (hmmlearn) — Slice 7
+│       ├─ mixture_survival.py        # EM-fit Weibull mixture + BIC K sweep — Slice 7
+│       └─ bayesian_survival.py       # PyMC Bayesian Weibull + NUTS + credible CI — Slice 7
 │
 ├─ agents/                            # Orchestration-graph vertices (paper §III.B)
 │   ├─ __init__.py
@@ -100,7 +105,7 @@ pinkmate-agentic-gtm/
 │   └─ train_survival_ensemble.py     # Trains 6 survival models + computes σ_SHAP_hazard
 │                                     # + correlates with classification σ_SHAP — Slice 6
 │
-├─ tests/                             # Reproducibility + determinism tests (303 total)
+├─ tests/                             # Reproducibility + determinism tests (359 total)
 │   ├─ __init__.py
 │   ├─ test_qmdp.py                   # Slice 1 — Q-MDP primitives
 │   ├─ test_pipeline.py               # Slice 1 — LangGraph integration + replay
@@ -108,23 +113,28 @@ pinkmate-agentic-gtm/
 │   ├─ test_attribution.py            # Slice 2 — σ_SHAP
 │   ├─ test_model_zoo.py              # Slice 2 — six-model ensemble
 │   ├─ test_dataset.py                # Slice 2 — Taiwan loader + preprocessing
-│   ├─ test_slice2_integration.py    # Slice 2 — full pipeline + §VI.C findings
-│   ├─ test_checkpointing.py         # Slice 3 — SqliteSaver + cross-process replay
+│   ├─ test_slice2_integration.py     # Slice 2 — full pipeline + §VI.C findings
+│   ├─ test_checkpointing.py          # Slice 3 — SqliteSaver + cross-process replay
 │   ├─ test_benchmarks.py             # Slice 4 — latency + replay-fidelity harness
-│   ├─ test_scoring_agent_modes.py   # Slice 3.5 — ScoringAgent deployment-mode flag
-│   ├─ test_leadforge_loader.py      # Slice 5 — LeadForge loader + synthetic fixtures
+│   ├─ test_scoring_agent_modes.py    # Slice 3.5 — ScoringAgent deployment-mode flag
+│   ├─ test_leadforge_loader.py       # Slice 5 — LeadForge loader + synthetic fixtures
 │   ├─ test_gtm_training.py           # Slice 5 — GTM training qualitative-direction tests
-│   ├─ test_x_education_loader.py    # Slice 5.1 — X Education loader + Zenodo fetch
+│   ├─ test_x_education_loader.py     # Slice 5.1 — X Education loader + Zenodo fetch
 │   ├─ test_xeducation_training.py    # Slice 5.1 — X Education training pipeline
-│   ├─ test_feature_engineering.py   # Slice 5.2 — RFM + Clay ICP pure functions
-│   ├─ test_scoring_agent_schema.py  # Slice 5.2 — hybrid fail-fast schema contract
-│   ├─ test_calibration_variance.py  # Slice 5.3 — σ_calibration 3 properties
+│   ├─ test_feature_engineering.py    # Slice 5.2 — RFM + Clay ICP pure functions
+│   ├─ test_scoring_agent_schema.py   # Slice 5.2 — hybrid fail-fast schema contract
+│   ├─ test_calibration_variance.py   # Slice 5.3 — σ_calibration 3 properties
 │   ├─ test_survival.py               # Slice 6 — 6 survival models correctness
 │   ├─ test_survival_data.py          # Slice 6 — LeadForge → survival transform
-│   └─ test_survival_attribution.py  # Slice 6 — SurvSHAP + σ_SHAP transfer
+│   ├─ test_survival_attribution.py   # Slice 6 — SurvSHAP + σ_SHAP transfer
+│   ├─ test_qmdp_formal.py            # Slice 7 — POMDP + Q-MDP + isomorphism
+│   ├─ test_hmm_belief.py             # Slice 7 — HMM Viterbi + forward-backward
+│   ├─ test_mixture_survival.py       # Slice 7 — EM + BIC K selection
+│   └─ test_bayesian_survival.py      # Slice 7 — Bayesian Weibull posterior + credible CI
 │
 └─ docs/                              # Technical documentation
-    ├─ architecture.md                # Paper ↔ code map, slice roadmap (§1-9)
+    ├─ architecture.md                # Paper ↔ code map, slice roadmap (§1-10)
+    ├─ probabilistic_framework.md     # Slice 7 standalone theoretical reference
     ├─ benchmarks_report.md           # Slice 4 empirical validation report
     ├─ benchmarks_report.json         # Machine-readable benchmark payload
     ├─ gtm_training_report.md         # Slice 5 GTM training report
@@ -151,7 +161,7 @@ pinkmate-agentic-gtm/
             └─ sigma_shap_transfer_scatter.png
 ```
 
-**Note on `models/` subdirectory structure.** `models/` has four gitignored sibling subdirectories after Slice 6: `models/taiwan/` (Slice 2 paper reproduction), `models/gtm/` (Slice 5 LeadForge intermediate), `models/gtm_advanced/` + `models/xeducation/` (Slice 5.1 cross-domain validation), and `models/survival/` (Slice 6 survival ensemble). Run `python scripts/reproduce_table2.py` to populate `models/taiwan/`; run `python scripts/train_gtm_ensemble.py` for `models/gtm/`; run `python scripts/train_xeducation_ensemble.py` for `models/xeducation/`; run `python scripts/train_survival_ensemble.py` for `models/survival/`. The `ScoringAgent` default `models_dir` is `models/gtm/` post-Slice-5 (product-first positioning); Taiwan reproduction uses explicit `ScoringAgent(models_dir="models/taiwan")`.
+**Note on `models/` subdirectory structure.** `models/` has five gitignored sibling subdirectories after Slice 7: `models/taiwan/` (Slice 2 paper reproduction), `models/gtm/` (Slice 5 LeadForge intermediate), `models/gtm_advanced/` + `models/xeducation/` (Slice 5.1 cross-domain validation), `models/survival/` (Slice 6 survival ensemble). Slice 7's Bayesian Weibull trace storage lives under `models/bayesian/` when `scripts/measure_bayesian_survival.py` is run (not yet committed as a script — can be invoked via `python -m pinkmate.ml.bayesian_survival.fit_bayesian_weibull` directly). Run `python scripts/reproduce_table2.py` to populate `models/taiwan/`; `scripts/train_gtm_ensemble.py` for `models/gtm/`; `scripts/train_xeducation_ensemble.py` for `models/xeducation/`; `scripts/train_survival_ensemble.py` for `models/survival/`. The `ScoringAgent` default `models_dir` is `models/gtm/` post-Slice-5 (product-first positioning); Taiwan reproduction uses explicit `ScoringAgent(models_dir="models/taiwan")`.
 
 **Slice 1 status (shipped).** The Q-MDP formal layer (`pinkmate/qmdp.py`, `pinkmate/state.py`) and the LangGraph orchestration graph (`workflows/pipeline.py`) are live and executable end-to-end on a mock lead with `python -m workflows.pipeline`.
 
@@ -167,11 +177,13 @@ pinkmate-agentic-gtm/
 
 **Slice 5.1 status (shipped 16 Nov 2026).** Cross-domain validation on the first REAL dataset in the build programme: X Education Lead Scoring v1 (Zenodo 23791277, CC BY 4.0, 9240 leads, ~38.54% conversion) + LeadForge advanced tier (synthetic B2B GTM with injected missingness and outliers, harder-conditions stress test). Commits `5cde402` + `a3d3606`. **All 4 qualitative directions PASS** across the full 3.23% → 38.54% imbalance spectrum (Taiwan 3.23% → LeadForge advanced 7.86% → LeadForge intermediate 20.98% → X Education 38.54%). **Monotone SMOTE-Δ-decrease trend empirically visible:** Δ = +0.0155 → +0.0108 → +0.0004 as minority rate approaches balance, exactly as the methodological definition predicts. Canonical verdicts record: [`SLICE_5_1_VERDICTS.md`](./SLICE_5_1_VERDICTS.md).
 
-**Slice 5.2 status (shipped 16 Nov 2026).** Deployment-schema alignment + RFM + Clay-style ICP + MTA formalism. Commit `7ed4031`. `ScoringAgent._predict_proba_real()` now runs a **hybrid fail-fast schema contract** (STRICT on required features via `RuntimeError`, LENIENT on extras via DEBUG log, WARN on `LEADINPUT_SCHEMA_VERSION` drift) instead of silent zero-fill. `pinkmate/ml/feature_engineering.py` adds pure RFM functions (90-day recency decay + log-scaled frequency saturating at 20 touches + monetary ACV band step function + composite) and Clay-style ICP scoring (5 rules + composite 0-100 + A/B/C/D tier). `pinkmate/state.py` exports `LEADINPUT_SCHEMA_VERSION = "slice52_rfm_icp_v1"` + 12 new optional `LeadInput` fields. `docs/architecture.md` Section 5f adds an explicit MTA (Multi-Touch Attribution) formalism showing Q-MDP belief-state transitions implement a Markov chain isomorphic to the Shao & Li 2011 data-driven MTA model (full formal proof deferred to Slice 7). 201 passing tests at shipping.
+**Slice 5.2 status (shipped 16 Nov 2026).** Deployment-schema alignment + RFM + Clay-style ICP + MTA formalism. Commit `7ed4031`. `ScoringAgent._predict_proba_real()` now runs a **hybrid fail-fast schema contract** (STRICT on required features via `RuntimeError`, LENIENT on extras via DEBUG log, WARN on `LEADINPUT_SCHEMA_VERSION` drift) instead of silent zero-fill. `pinkmate/ml/feature_engineering.py` adds pure RFM functions (90-day recency decay + log-scaled frequency saturating at 20 touches + monetary ACV band step function + composite) and Clay-style ICP scoring (5 rules + composite 0-100 + A/B/C/D tier). `pinkmate/state.py` exports `LEADINPUT_SCHEMA_VERSION = "slice52_rfm_icp_v1"` + 12 new optional `LeadInput` fields. `docs/architecture.md` Section 5f adds an explicit MTA (Multi-Touch Attribution) formalism showing Q-MDP belief-state transitions implement a Markov chain isomorphic to the Shao & Li 2011 data-driven MTA model (full formal proof delivered in Slice 7). 201 passing tests at shipping.
 
 **Slice 5.3 status (shipped 16 Nov 2026).** σ_calibration = calibration-stability companion to σ_SHAP attribution-stability. Commit `10949bb`. Both measured under the SAME K-rotation protocol (K=50 default, matching paper §V canonical). `pinkmate/ml/calibration_variance.py` mirrors `attribution.py` API (`sigma_calibration` + `compute_rotated_calibration_variance` sibling to `sigma_shap` + `compute_rotated_shap_variance`). `scripts/measure_sigma_calibration.py` reuses Slice 5/5.1 trained model pickles across all 4 cross-domain datasets, correlates σ_calibration with σ_SHAP via Spearman + 95% bootstrap CI, writes `docs/sigma_calibration_report.md`. Three properties enforced by `tests/test_calibration_variance.py`: (1) bounded σ ∈ [0, 0.5]; (2) K-stable (σ at K=50 within 0.05 of σ at K=10); (3) reproducible (same seed → identical σ). 241 passing tests at shipping.
 
 **Slice 6 status (shipped 18 Nov 2026).** Survival analysis extension — Cox PH primary + 3 parametric AFT families (Weibull / LogN / LogL) + XGBoost `survival:cox` + LightGBM AFT. Commit `a131ba9`. Introduces a new top-level `## 6. Survival analysis extension` section in `docs/architecture.md` (methodological jump: different prediction target, different loss, different attribution structure; existing §6/§7/§8 renumbered to §7/§8/§9). `pinkmate/ml/survival.py` exposes a unified `_BaseSurvivalWrapper` interface over lifelines + XGBoost + LightGBM; `pinkmate/ml/survival_data.py` transforms LeadForge columns into `(time, event)` via Decision B=3 synthetic `days_since_first_touch` construction with honesty-bar sensitivity sweep over touch-interval ∈ {5, 7, 14}; `pinkmate/ml/survival_attribution.py` provides `sigma_shap_hazard` + `compute_rotated_survshap_variance` mirroring `attribution.py` API, backed by the Krzyziński et al. 2023 `survshap` package with a finite-difference cumulative-hazard fallback. `scripts/train_survival_ensemble.py` answers three research questions in `docs/survival_training_report.md`: (1) does σ_SHAP transfer from classification to survival (Spearman ρ + 95% bootstrap CI); (2) is Cox PH σ_SHAP lower than Weibull σ_SHAP; (3) which parametric family fits LeadForge best by AIC. **Bank of England PRA SS1/23 credit-risk alignment:** Cox PH is the regulatory convention for survival-style credit-risk modelling; shipping σ_SHAP on both semi-parametric and parametric families gives the RAEng Route 4 evidence pack a regulatory-adjacent methodology line. 62 new tests (303 total). Dependencies added: `lifelines>=0.27.0`, `scikit-survival>=0.22.0`, `survshap>=0.4.0`.
+
+**Slice 7 status (shipped 18 Nov 2026).** Probabilistic framework formalisation — POMDP + HMM + Bayesian Weibull + Weibull mixture, bundled per the 9 November 2026 scope decision. Commit `4bce54f`. New top-level `docs/architecture.md` Section 7 (methodological jump: fresh theoretical scaffolding, not survival evidence); existing §7/§8/§9 renumbered to §8/§9/§10. Four modules shipped: `pinkmate/qmdp_formal.py` (POMDP tuple + Bayesian belief filter + Q-MDP commit algorithm with Littman, Cassandra & Kaelbling 1995 citation + isomorphism adapter proving `SuperposedBelief` ≡ POMDP belief and `governance_commit` ≡ degenerate Q-MDP commit); `pinkmate/ml/hmm_belief.py` (3-state `LatentStateHMM` wrapping `hmmlearn.CategoricalHMM` with Viterbi + forward-backward + Baum-Welch fit); `pinkmate/ml/mixture_survival.py` (EM-fit Weibull mixture with right-censoring + BIC-based K selection across K ∈ {2, 3, 4}); `pinkmate/ml/bayesian_survival.py` (PyMC 5.x+ Bayesian Weibull with HalfNormal priors + NUTS sampling + posterior-predictive credible intervals on S(t)). New one-stop theoretical reference `docs/probabilistic_framework.md`. Four decisions locked 17 November 2026: A=PyMC over NumPyro, B=NUTS sampler, C=BIC sweep K ∈ {2,3,4}, D=hmmlearn with 3 latent states (MQL/SQL/ClosedWon). Dependencies added: `pymc>=5.0.0`, `hmmlearn>=0.3.0`. 56 new tests (359 total). UTF-8 encoding housekeeping micro-commit `0e3b9cd` shipped alongside.
 
 ---
 
@@ -191,6 +203,7 @@ PinkMate's GTM engine is modelled as a set of independent but coordinated agents
 - **ScoringAgent**
   - Applies the six-model classical ML ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost) via a hybrid fail-fast schema contract (Slice 5.2).
   - Produces a probability of conversion with per-model breakdown.
+  - Post-Slice-7: theoretically grounded by `pinkmate/qmdp_formal.py` POMDP formalism and Q-MDP commit rule (Littman, Cassandra & Kaelbling 1995).
 
 - **SegmentationAgent**
   - Converts scores into tiers (Tier 1 / Tier 2 / Nurture).
@@ -238,15 +251,10 @@ PinkMate is being built against the paper on a weekly slice cadence. Each slice 
 - **Slice 5.2 (shipped 16 Nov 2026).** Deployment-schema alignment (hybrid fail-fast ScoringAgent contract) + RFM feature engineering + Clay-style ICP scoring (5 rules + composite + A/B/C/D tier) + MTA formalism in `docs/architecture.md` Section 5f. Commit `7ed4031`. 201 passing tests.
 - **Slice 5.3 (shipped 16 Nov 2026).** σ_calibration governance sibling to σ_SHAP (same K=50 rotation protocol). `pinkmate/ml/calibration_variance.py` mirrors `attribution.py` API. Three properties enforced: bounded, K-stable, reproducible. Research question "does σ_calibration correlate with σ_SHAP" reported via Spearman + 95% bootstrap CI in `docs/sigma_calibration_report.md`. Commit `10949bb`. 241 passing tests.
 - **Slice 6 (shipped 18 Nov 2026).** Survival analysis extension — Cox PH primary + 3 parametric AFT + XGBoost `survival:cox` + LightGBM AFT + SurvSHAP. New top-level `docs/architecture.md` Section 6 (methodological jump, not sub-slice under §5). Research question "does σ_SHAP transfer from classification to survival" answered via Spearman correlation on matched model-family pairs. Bank of England PRA SS1/23 credit-risk alignment. Commit `a131ba9`. 303 passing tests.
-- **Slice 7 (planned).** POMDP formalization + Bayesian + mixture + HMM — probabilistic framework formalisation bundling the theoretical scaffolding referenced from Slice 5.2 MTA section and Slice 6 survival section. Likely a fresh top-level `docs/architecture.md` Section (renumber pattern as Slice 6).
-<!-- APPEND this block to README.md Section 6 Roadmap, inserted BEFORE the "Slice 7 (planned)" bullet. -->
-<!-- Integration guide Step 4 uses regex-replace to insert at the correct position, NOT Add-Content EOF (per 18 Nov 2026 housekeeping lesson). -->
-
-- **Slice 7 (shipped 18 Nov 2026).** Probabilistic framework formalisation — bundled per the 9 November 2026 scope decision. New top-level `docs/architecture.md` Section 7 (methodological jump: fresh theoretical scaffolding, not survival evidence); existing §7/§8/§9 renumbered to §8/§9/§10. Four modules shipped: `pinkmate/qmdp_formal.py` (POMDP tuple + Bayesian belief filter + Q-MDP commit algorithm with Littman, Cassandra & Kaelbling 1995 citation + isomorphism adapter proving `SuperposedBelief` ≡ POMDP belief and `governance_commit` ≡ degenerate Q-MDP); `pinkmate/ml/hmm_belief.py` (3-state `LatentStateHMM` wrapping `hmmlearn.CategoricalHMM` with Viterbi + forward-backward + Baum-Welch fit); `pinkmate/ml/mixture_survival.py` (EM-fit Weibull mixture with right-censoring + BIC-based K selection across K ∈ {2, 3, 4}); `pinkmate/ml/bayesian_survival.py` (PyMC 5.x+ Bayesian Weibull with HalfNormal priors + NUTS sampling + posterior-predictive credible intervals on S(t)). New one-stop theoretical reference `docs/probabilistic_framework.md`. Four decisions locked 17 November 2026: A=PyMC over NumPyro, B=NUTS sampler, C=BIC sweep K ∈ {2,3,4}, D=hmmlearn with 3 latent states (MQL/SQL/ClosedWon). Dependencies added: `pymc>=5.0.0`, `hmmlearn>=0.3.0`. 56 new tests (359 total).
-
-
-- **Slice 7.5 (planned).** Conformal prediction overlay on θ_governance + PSI/KL distribution-shift sentinels. Production-hardens the ScoringAgent for ongoing-monitoring regulatory conversations.
+- **Slice 7 (shipped 18 Nov 2026).** Probabilistic framework formalisation — POMDP + HMM + Bayesian Weibull + Weibull mixture, bundled per the 9 November 2026 scope decision. New top-level `docs/architecture.md` Section 7. Four modules shipped (`qmdp_formal.py`, `hmm_belief.py`, `mixture_survival.py`, `bayesian_survival.py`) + one-stop theoretical reference `docs/probabilistic_framework.md`. Littman/Cassandra/Kaelbling 1995 POMDP citation anchors the paper Section III.A rewrite material. Commit `4bce54f`. 359 passing tests.
+- **Slice 7.5 (planned).** Conformal prediction overlay on θ_governance + PSI/KL distribution-shift sentinels. Production-hardens the ScoringAgent for ongoing-monitoring regulatory conversations. Expected 2 days, ~30 new tests.
 - **Slice 8+ (optional extensions).** Fairness audits (Fairlearn), Kolmogorov-Arnold Networks comparison on lead scoring (Lee et al. 2025), DBpedia-enriched feature engineering (arXiv 2606.28355).
+- **Paper revisions pass (planned, parallel to Slice 7.5).** Coordinated edit pass: Related Work (Yan et al. 2020 citation + "we extend with σ_SHAP + POMDP + cross-domain validation"), Theoretical Foundations (Littman/Cassandra/Kaelbling 1995 POMDP connection, source material in `docs/probabilistic_framework.md`), Results §VI.D or §VII (cross-domain σ_SHAP transfer evidence including Slice 6 classification→survival Spearman verdict).
 - **Later (data-gated).** Real B2B conversion data path — `pink-mate.co.uk` landing-page capture over 6-12 months, academic partnership via Kent Business School / Khawar network, or specific industry engagement.
 - **Later.** Integration surface — connectors to Clay, PhantomBuster, Apollo, HubSpot, and Salesforce.
 
