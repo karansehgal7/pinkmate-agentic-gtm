@@ -1,4 +1,4 @@
-langchain
+﻿langchain
 langgraph
 pydantic>=2.0
 scikit-learn
@@ -18,6 +18,9 @@ ucimlrepo
 
 # Slice 3 — Durable checkpointing (paper §III.B replay fidelity)
 langgraph-checkpoint-sqlite
+
+# Slice 5 — LeadForge HuggingFace dataset loader + tests
+datasets>=2.0.0
 
 # Testing
 pytest
