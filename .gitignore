@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -33,7 +33,8 @@ htmlcov/
 .DS_Store
 
 # Models (artefacts live outside the repo until a release-tagged version)
-models/
+models/*
+!models/README.md
 *.pkl
 *.joblib
 
