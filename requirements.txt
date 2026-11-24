@@ -31,3 +31,7 @@ survshap>=0.4.0
 
 pymc>=5.0.0
 hmmlearn>=0.3.0
+
+# Slice 7.5 - production hardening (conformal + drift + fairness)
+mapie>=1.0.0
+fairlearn>=0.10.0

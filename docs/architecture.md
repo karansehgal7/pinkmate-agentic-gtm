@@ -681,7 +681,242 @@ For the one-stop theoretical reference with full math derivations, see
 `docs/probabilistic_framework.md`.
 
 
-## 8. Slice roadmap
+## 8. Production hardening + PRA SS1/23 alignment (Slice 7.5)
+
+Shipped 24 November 2026. PinkMate is the GTM reference deployment of the
+Q-MDP framework (Sehgal & Bhatti 2026). This slice brings the deployment
+to Bank of England Prudential Regulation Authority **SS1/23 Principles 3
+and 4** compliance via three complementary production-hardening layers:
+
+* **Conformal prediction coverage guarantees** (§8.1)
+* **Drift sentinels** (§8.2)
+* **Fairness diagnostics** (§8.3)
+
+Taken together with σ_SHAP (Slice 2) and σ_calibration (Slice 5.3), these
+signals satisfy the Financial Conduct Authority's **FS2/24 agentic AI
+explainability** requirements for the measured-attribution axis. §8.6
+maps each component to the specific regulatory principle it answers.
+
+### 8.1 Conformal prediction overlay on θ_governance
+
+The Slice 1 governance primitive is
+
+    commit_point(X)       :=    point_score(X) >= theta
+
+which fires whenever the ensemble's mean class-1 probability crosses a
+scalar threshold. This is sufficient for internal demos but it is NOT
+sufficient under PRA SS1/23 Principle 3 (conservatism in model use for
+credit, risk, and decisioning), because a 0.76 point score with a wide
+underlying posterior is operationally indistinguishable from a 0.76
+point score with a narrow one.
+
+Slice 7.5a installs a strictly stricter conservative commit rule:
+
+    commit_conservative(X) :=    lower_bound(X) >= theta
+
+where `lower_bound(X)` is the lower end of a split-conformal prediction
+interval at miscoverage rate α (default α = 0.10, giving 90% empirical
+coverage on the calibration set).
+
+**Construction.** Given a trained ensemble of classifiers, an adapter
+(`_EnsembleProbabilityRegressor`) exposes the ensemble's mean
+`predict_proba(X)[:, 1]` as a `sklearn.base.RegressorMixin`. The adapter
+is wrapped in MAPIE's `SplitConformalRegressor` (version ≥ 1.0.0, uses
+the `confidence_level = 1 - α` API introduced in MAPIE 1.0) with
+`prefit=True` and conformity score `"absolute"`. Calibration is performed
+on the held-out 20% test split from training-time `preprocess()`,
+persisted to `models/<dataset>/calibration.npz` alongside `attribution.json`.
+On inference, `predict_interval(X)` returns both a point estimate and a
+`(lower, upper)` pair clipped to the probability simplex [0, 1].
+
+**Coverage guarantee.** Under exchangeability of calibration and
+production samples, conformal prediction gives the frequentist
+guarantee
+
+    P( true P(Y=1|X) ∈ [lower_bound(X), upper_bound(X)] )  >=  1 - α
+
+marginalising over the calibration-plus-test joint distribution. This
+is a distribution-free guarantee: no parametric assumption about the
+scoring model is required. Lei et al. (2018) JASA give the canonical
+exposition; Angelopoulos & Bates (2023) give the modern gentle
+introduction.
+
+**What breaks it.** The guarantee is on exchangeability. If the
+production distribution drifts away from calibration, coverage silently
+degrades. §8.2 is the companion drift sentinel that fires at the feature
+level when PSI exceeds the credit-risk convention threshold of 0.25.
+
+### 8.2 PSI + KL + KS drift sentinels
+
+Slice 7.5b installs three complementary scalar drift metrics between a
+reference distribution (the training-time feature snapshot, stored as
+`models/<dataset>/train_distribution_snapshot.json`) and the current
+inference-time distribution. All three are implemented in pure
+numpy/scipy; no new dependencies are added.
+
+**PSI (Population Stability Index).** The industry-standard credit-risk
+metric (Siddiqi 2017, Yurdakul 2018), computed as
+
+    PSI = Σ_i (current_i - reference_i) * ln(current_i / reference_i)
+
+over equal-frequency buckets (default 10) of the reference sample. PRA
+SS1/23 Section 5 convention:
+
+    PSI <= 0.10               stable
+    0.10 < PSI <= 0.25         shift warning
+    PSI > 0.25                 significant shift (RuntimeWarning raised)
+
+Both thresholds are exposed via `DriftThresholds(warn=…, alert=…)` for
+deployments that prefer stricter cutoffs (e.g. 0.05 / 0.15 for more
+conservative stacks).
+
+**KL divergence (nats, current ∥ reference).** Asymmetric by
+construction. Informative when PSI fires but direction of shift matters
+for diagnosis. A large KL with a small PSI indicates concentrated mass
+has moved between buckets without changing marginal shape.
+
+**Two-sample Kolmogorov-Smirnov.** Returns `(statistic, p_value)`. The D
+statistic is the max absolute difference between the two empirical CDFs.
+The p-value alone is prone to firing on large-sample noise and is
+therefore reported alongside PSI rather than as the primary sentinel.
+
+**Snapshot persistence.** `FeatureSnapshot.from_array(name, values)`
+subsamples (up to `max_sample_size=5000`) and computes summary stats.
+`save_distribution_snapshot(path, snapshots)` writes a JSON envelope
+keyed by schema version; `ScoringAgent` calls `load_distribution_snapshot`
+at startup. A missing snapshot is a graceful-degradation case: the agent
+logs once and proceeds without drift checks (first-run-on-fresh-clone).
+
+**Batch-vs-single-lead semantics.** PSI/KL/KS are batch metrics; they
+need ≥ ~50 samples to produce a stable value. Single-lead scoring should
+NOT trigger drift checks on a 1-element array — this produces spurious
+red flags. The agent collects feature-value batches on a rolling window
+(default: last 100 scored leads) and runs the drift check against the
+window.
+
+### 8.3 Fairness diagnostics via Fairlearn
+
+Slice 7.5c installs a Fairlearn-based fairness audit that is **purely
+diagnostic** — it does not modify predictions. The audit runs across
+the protected attributes declared on `LeadInput.protected_attributes:
+Dict[str, Any]` (schema extension); the default primary audit axis is
+`employee_band`, matching the EU AI Act / FCA DP24/1 informal
+convention that SMB-vs-enterprise disparate impact is a stated
+regulatory interest.
+
+**Three metrics reported per protected attribute:**
+
+* `selection_rate` per group — fraction of leads in each group with a
+  positive prediction. Large disparities suggest the scorer is
+  systematically ranking one segment higher than another.
+* `demographic_parity_difference` — max group selection rate minus min.
+  EU AI Act Article 10 cites this as a baseline bias check.
+* `equalized_odds_difference` — max of `|TPR_g - TPR_g'|` and
+  `|FPR_g - FPR_g'|` across groups, conditioning on the ground-truth
+  label. A stricter criterion than demographic parity (Hardt, Price &
+  Srebro 2016 NeurIPS).
+
+**Interpretation threshold.** The informal EU AI Act / FCA convention:
+
+    diff <= 0.10               acceptable
+    0.10 < diff <= 0.20         requires attention
+    diff > 0.20                 requires intervention or documented
+                                 mitigation
+
+configurable via `FairnessThresholds(warn=…, alert=…)`.
+
+**Live-inference mode.** Without `y_true`, only
+`demographic_parity_difference` is computed; `equalized_odds_difference`
+is reported as `None`. Live-inference deployments should periodically
+back-fill `y_true` from closed-won/lost outcomes and re-run the audit
+on the retrospective batch.
+
+**Mitigation.** A detected red fairness level is NOT auto-remediated.
+Fairlearn's `reductions` and `postprocessing` APIs provide mitigation
+primitives; adding a mitigation pass is deferred to Slice 8+. AIF360
+and aequitas-ai are deferred to the separate cyber-AI finance product
+(SS3/19 climate financial risk), not PinkMate Slice 8.
+
+### 8.4 Composition into the scoring path
+
+The three layers compose behind a single `ProductionHardeningPipeline`
+class, instantiated once per `ScoringAgent` at startup with:
+
+* a pre-conformalised `ConformalScoringWrapper` (needs calibration data
+  at construction, loaded from `models/<dataset>/calibration.npz`);
+* a dict of `FeatureSnapshot` objects loaded from
+  `<models_dir>/train_distribution_snapshot.json` (or empty when
+  running on a fresh clone);
+* `DriftThresholds` and `FairnessThresholds` configurable per
+  deployment.
+
+The scoring path then calls two pipeline methods:
+
+* `pipeline.score_lead(features, feature_dict_for_drift, theta)`
+  returns a `HardenedScore` carrying the conformal score plus drift
+  flags for one lead.
+* `pipeline.audit_batch_fairness(y_pred, protected_attributes, y_true)`
+  runs the fairness audit once per batch.
+
+The `ScoringAgent` writes both outputs to its trace. The conservative
+commit flag is reported as a sibling signal in trace metadata alongside
+the Slice 1 commit; downstream policy chooses which to honour.
+
+### 8.5 Trace schema extensions
+
+`LeadInput` gains one optional field:
+
+* `protected_attributes: Dict[str, Any]` — maps attribute name to the
+  lead's group label, e.g. `{"employee_band": "SMB"}`. Defaults to an
+  empty dict so the schema is additive and all existing callers are
+  unaffected.
+
+`ScoreOutput` gains three optional fields:
+
+* `conformal_lower: Optional[float]` — Slice 7.5a lower bound (0-100 scale).
+* `conformal_upper: Optional[float]` — Slice 7.5a upper bound (0-100 scale).
+* `drift_flags: List[str]` — sorted list of `'<level>:<feature>'` flags
+  from Slice 7.5b.
+
+The `LEADINPUT_SCHEMA_VERSION` constant bumps to
+`"slice75_production_hardening_v1"`.
+
+### 8.6 Regulatory mapping
+
+| Regulator reference | PinkMate component (slice) |
+|---|---|
+| PRA SS1/23 Principle 1 (model identification) | Model registry via `models/<dataset>/` subdirectory convention (Slice 5.1) |
+| PRA SS1/23 Principle 2 (governance framework) | Agentic commit protocol with trace journal (Slice 1, Slice 3) |
+| PRA SS1/23 Principle 3 (conservatism in model use) | Conservative commit rule: `lower_bound >= theta` (Slice 7.5a) |
+| PRA SS1/23 Principle 4 (independent model validation) | Fairness diagnostics as independent diagnostic signal (Slice 7.5c) |
+| PRA SS1/23 Principle 5 (ongoing monitoring) | PSI + KL + KS drift sentinels on every feature (Slice 7.5b) |
+| FCA DP24/1 § on agentic AI explainability | σ_SHAP attribution-stability (Slice 2), σ_calibration (Slice 5.3), σ_SHAP_hazard (Slice 6) |
+| EU AI Act Article 10 (data and data governance) | `LeadInput.protected_attributes` schema + fairness audit (Slice 7.5c) |
+| EU AI Act Article 13 (transparency) | `docs/probabilistic_framework.md` (Slice 7) + this architecture document |
+
+Alignment is at the architectural level — a mapping between PinkMate's
+DESIGN and the regulators' STATED PRINCIPLES. It is not a certification
+claim; certification requires an external auditor and sector-specific
+scope that this reference deployment does not have. A production FinServ
+deployment of the Q-MDP framework (the planned cyber-AI finance product
+spin-off) is where formal certification becomes relevant.
+
+### 8.7 References
+
+* Angelopoulos, A. N. & Bates, S. (2023). *Conformal Prediction: A Gentle Introduction*. Foundations and Trends in Machine Learning 16(4), 494-591.
+* Bank of England PRA (2023). *SS1/23 Model Risk Management Principles for Banks*. Policy Statement PS6/23, May 2023.
+* European Union (2024). *Artificial Intelligence Act*, Regulation (EU) 2024/1689.
+* Financial Conduct Authority (2024). *DP24/1 AI in Financial Services*, April 2024.
+* Hardt, M., Price, E., Srebro, N. (2016). *Equality of Opportunity in Supervised Learning*. NeurIPS 29.
+* Lei, J., G'Sell, M., Rinaldo, A., Tibshirani, R. J., Wasserman, L. (2018). *Distribution-free predictive inference for regression*. JASA 113(523).
+* Sehgal, K. & Bhatti, K. (2026). *Q-MDP: Superposition-aware state orchestration for deterministic governance of agentic systems in regulated financial and ESG infrastructure*. IEEE Cyber-AI 2026, Submission #4554.
+* Siddiqi, N. (2017). *Intelligent Credit Scoring*, 2nd edition, Wiley, ch. 7.
+* Vovk, V., Gammerman, A., Shafer, G. (2005). *Algorithmic Learning in a Random World*. Springer.
+* Yurdakul, B. (2018). *Statistical Properties of Population Stability Index*. PhD thesis, Western Michigan University.
+
+---
+
+## 9. Slice roadmap
 
 - **Slice 1 (shipped):** Q-MDP formal structure wired into LangGraph with deterministic replay smoke tests.
 - **Slice 2 (shipped):** Imbalance-aware ML layer — six-model ensemble (§III.D), SMOTE (§III.C), TreeSHAP + σ_SHAP measurement (§V), full `scripts/reproduce_table2.py` reproducing Table I + Table II against UCI 572 with tolerance assertions (σ_SHAP ±0.005, recall ±0.03). `ScoringAgent` now loads real pickled models with a transparent fallback to the Slice 1 deterministic predictor when models are not yet trained.
@@ -694,7 +929,7 @@ For the one-stop theoretical reference with full math derivations, see
 
 ---
 
-## 9. Running the pipeline
+## 10. Running the pipeline
 
 ### Smoke-test the Q-MDP orchestration layer (fast, no ML training required)
 
@@ -768,7 +1003,7 @@ Current totals: Slice 1 Q-MDP + pipeline tests + Slice 2 ML + integration tests.
 
 ---
 
-## 10. Citing
+## 11. Citing
 
 If you build on this reference deployment, please cite the paper:
 

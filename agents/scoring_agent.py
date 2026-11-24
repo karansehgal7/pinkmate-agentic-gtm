@@ -127,6 +127,41 @@ class ScoringAgent:
                 "(product-demo path; no model loading, no warnings)."
             )
 
+        # Slice 7.5 — production hardening pipeline (conformal + drift + fairness)
+        self.hardening = None
+        self._last_conformal = None
+        if (
+            self.model_source == "zoo"
+            and self._using_real_models
+            and getattr(self, "_X_calibration", None) is not None
+        ):
+            try:
+                from pinkmate.ml.production_hardening import ProductionHardeningPipeline
+                live_ensemble = {
+                    n: m for n, m in self.models.items() if m is not None
+                }
+                self.hardening = ProductionHardeningPipeline.from_models_dir(
+                    models_dir=self.models_dir,
+                    ensemble=live_ensemble,
+                    X_calibration=self._X_calibration,
+                    y_calibration=self._y_calibration,
+                    alpha=0.10,
+                )
+                LOGGER.info(
+                    "ScoringAgent Slice 7.5 hardening pipeline enabled "
+                    "(alpha=0.10, snapshots=%d features).",
+                    len(self.hardening.reference_snapshots),
+                )
+            except Exception as exc:
+                warnings.warn(
+                    f"Slice 7.5 hardening pipeline init failed "
+                    f"({type(exc).__name__}: {exc}). ScoringAgent will "
+                    f"continue without conformal/drift instrumentation.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self.hardening = None
+
     # ------------------------------------------------------------------
     # Model loading — Slice 2 + Slice 5.2 schema introspection
     # ------------------------------------------------------------------
@@ -184,6 +219,22 @@ class ScoringAgent:
                     self.sigma_shap_by_model[name] = float(entry["sigma_shap"])
             except Exception as e:
                 LOGGER.warning("Failed to parse attribution.json: %s", e)
+
+        # Slice 7.5 — load calibration.npz for ConformalScoringWrapper
+        self._X_calibration = None
+        self._y_calibration = None
+        cal_path = self.models_dir / "calibration.npz"
+        if cal_path.exists():
+            try:
+                cal = np.load(cal_path, allow_pickle=True)
+                self._X_calibration = cal["X_calibration"]
+                self._y_calibration = cal["y_calibration"]
+                LOGGER.info(
+                    "Loaded calibration set (n=%d) from %s",
+                    len(self._y_calibration), cal_path,
+                )
+            except Exception as e:
+                LOGGER.warning("Failed to load calibration.npz: %s", e)
 
     # ------------------------------------------------------------------
     # Slice 5.2 — Schema introspection helpers
@@ -273,6 +324,15 @@ class ScoringAgent:
 
         final_score, per_model = self._predict_proba(enriched.features)
         state.score = ScoreOutput(final_score=final_score, model_scores=per_model)
+
+        # Slice 7.5a — attach conformal bounds in 0-100 scale
+        if getattr(self, "_last_conformal", None) is not None:
+            state.score.conformal_lower = round(
+                100.0 * self._last_conformal.lower_bound, 2
+            )
+            state.score.conformal_upper = round(
+                100.0 * self._last_conformal.upper_bound, 2
+            )
 
         # Project the score into a two-component superposed belief.
         p_qualified = round(final_score / 100.0, 6)
@@ -425,6 +485,19 @@ class ScoringAgent:
 
         consensus_proba = float(np.mean(probs))
         final_score = round(consensus_proba * 100.0, 2)
+
+        # Slice 7.5a — conformal interval on consensus_proba
+        self._last_conformal = None
+        if self.hardening is not None:
+            try:
+                self._last_conformal = (
+                    self.hardening.conformal.predict_interval_single(
+                        x[0], theta=0.75,
+                    )
+                )
+            except Exception as e:
+                LOGGER.warning("Slice 7.5 conformal prediction failed: %s", e)
+
         return final_score, per_model
 
     def _predict_proba_placeholder(

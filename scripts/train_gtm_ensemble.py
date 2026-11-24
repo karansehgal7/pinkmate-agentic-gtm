@@ -72,7 +72,7 @@ from pinkmate.ml.attribution import (
     AttributionResult,
     compute_rotated_shap_variance,
 )
-from pinkmate.ml.dataset import preprocess
+from pinkmate.ml.dataset import PreprocessedSplit, preprocess
 from pinkmate.ml.imbalance import apply_smote
 from pinkmate.ml.leadforge_loader import (
     LEADFORGE_RANDOM_SEED,
@@ -133,6 +133,8 @@ class SliceFiveArtefacts:
     attributions_with_smote: Dict[str, AttributionResult]
     xgb_no_smote_attribution: Optional[AttributionResult]
     sha256: str
+    # Slice 7.5 — carried through to write calibration.npz alongside artefacts
+    split: Optional[PreprocessedSplit] = None
 
     def save(self, models_dir: Path) -> None:
         """Persist models + metrics + attribution to models/gtm/."""
@@ -172,6 +174,15 @@ class SliceFiveArtefacts:
             }
         with open(models_dir / "attribution.json", "w") as f:
             json.dump(attribution_payload, f, indent=2)
+
+        # Slice 7.5 — persist held-out test split as conformal calibration set
+        if self.split is not None:
+            np.savez(
+                models_dir / "calibration.npz",
+                X_calibration=self.split.X_test,
+                y_calibration=self.split.y_test,
+                feature_names=np.array(self.split.feature_names, dtype=object),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +299,7 @@ def run_gtm_pipeline(
         attributions_with_smote=attributions_with_smote,
         xgb_no_smote_attribution=xgb_no_smote_attribution,
         sha256=ds.sha256,
+        split=split,  # Slice 7.5 — carry through for calibration.npz
     )
 
 

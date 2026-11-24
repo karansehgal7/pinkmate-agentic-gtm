@@ -45,7 +45,7 @@ from pinkmate.qmdp import SuperposedBelief, GovernanceCommit, DEFAULT_THETA_GOVE
 #: Bump this whenever the field set on LeadInput changes in a way that
 #: affects model training — e.g., adding RFM features (slice52_rfm_icp_v1),
 #: adding survival-time fields (future slice6_survival_v1), etc.
-LEADINPUT_SCHEMA_VERSION: str = "slice52_rfm_icp_v1"
+LEADINPUT_SCHEMA_VERSION: str = "slice75_production_hardening_v1"
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +204,14 @@ class LeadInput(BaseModel):
                     "≥80 → A, ≥60 → B, ≥40 → C, <40 → D.",
     )
 
+    # Slice 7.5 — fairness-audit configuration
+    protected_attributes: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Fairness-audit protected-attribute labels per lead, "
+                    "keyed by attribute name, e.g. {'employee_band': 'SMB'}. "
+                    "Consumed by ProductionHardeningPipeline.audit_batch_fairness.",
+    )
+
 
 class EnrichedRecord(BaseModel):
     """Lead record after firmographic / intent / account-intelligence enrichment."""
@@ -226,6 +234,22 @@ class ScoreOutput(BaseModel):
 
     final_score: float = Field(..., ge=0.0, le=100.0)
     model_scores: Dict[str, float] = Field(default_factory=dict)
+
+    # Slice 7.5a — conformal interval bounds (0-100 scale, matches final_score)
+    conformal_lower: Optional[float] = Field(
+        default=None, ge=0.0, le=100.0,
+        description="Slice 7.5a conformal interval lower bound (0-100 scale).",
+    )
+    conformal_upper: Optional[float] = Field(
+        default=None, ge=0.0, le=100.0,
+        description="Slice 7.5a conformal interval upper bound (0-100 scale).",
+    )
+    # Slice 7.5b — drift sentinel flags
+    drift_flags: List[str] = Field(
+        default_factory=list,
+        description="Slice 7.5b '<level>:<feature>' PSI-sentinel flags "
+                    "attached by ScoringAgent when drift checks run.",
+    )
 
 
 # ---------------------------------------------------------------------------

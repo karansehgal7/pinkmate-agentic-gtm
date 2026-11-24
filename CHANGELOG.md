@@ -9,9 +9,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [Unreleased]
 
 ### Planned
-- **Slice 7.5** — Conformal prediction overlay on `θ_governance` + PSI/KL distribution-shift sentinels. Production hardening for ongoing-monitoring regulatory conversations. Target ~2 days, ~30 new tests.
-- **Paper revisions pass** (parallel to Slice 7.5) — Coordinated edit pass covering Related Work (Yan et al. 2020), Theoretical Foundations (Littman/Cassandra/Kaelbling 1995 POMDP), and Results §VI.D or §VII (cross-domain σ_SHAP transfer evidence).
-- **Slice 8+** — Fairness audits (Fairlearn), Kolmogorov-Arnold Networks on lead scoring (Lee et al. 2025), DBpedia-enriched feature engineering (arXiv 2606.28355).
+- **Paper revisions pass** — Coordinated edit pass covering Related Work (Yan et al. 2020), Theoretical Foundations (Littman/Cassandra/Kaelbling 1995 POMDP), and Results §VI.D or §VII (cross-domain σ_SHAP transfer evidence from Slices 5.1 + 6 + 7.5).
+- **Slice 8+** — Kolmogorov-Arnold Networks on lead scoring (Lee et al. 2025), DBpedia-enriched feature engineering (arXiv 2606.28355). AIF360 and aequitas-ai fairness extensions deferred to the separate cyber-AI finance product (SS3/19 climate financial risk).
+
+---
+
+## [Slice 7.5] — 2026-11-24 — `<WILL_FILL_SHA>`
+
+### Added
+- **Production hardening + PRA SS1/23 alignment** — three complementary layers composed behind a single `ProductionHardeningPipeline` class. Brings the GTM reference deployment of the Q-MDP framework to Bank of England PRA SS1/23 Principles 3 and 4 alignment and satisfies FS2/24 agentic AI explainability for the measurement axis (alongside Slice 2 σ_SHAP, Slice 5.3 σ_calibration, Slice 6 σ_SHAP_hazard).
+- `pinkmate/ml/conformal.py` (~495 lines) — `ConformalScoringWrapper` with MAPIE `SplitConformalRegressor` (`confidence_level = 1 - α` API, MAPIE 1.x). Produces `(point, lower, upper)` with frequentist marginal coverage guarantee at confidence level `1 - α` (default α = 0.10). Conservative commit rule: `commit iff lower_bound ≥ θ`. Strengthens Slice 1 `governance_commit` under PRA SS1/23 Principle 3 conservatism-in-use.
+- `pinkmate/ml/drift.py` (~636 lines) — PSI, KL-divergence (nats, current ∥ reference), two-sample Kolmogorov-Smirnov. Pure numpy/scipy, no new deps. `FeatureSnapshot` with subsampling + `save/load_distribution_snapshot` JSON persistence. PRA credit-risk thresholds warn 0.10, alert 0.25, both configurable via `DriftThresholds`. Raises `RuntimeWarning` on red.
+- `pinkmate/ml/fairness.py` (~417 lines) — Fairlearn wrapper producing `demographic_parity_difference`, `demographic_parity_ratio`, `equalized_odds_difference`, `equalized_odds_ratio` per protected attribute. Default attribute `employee_band` per EU AI Act / FCA DP24/1 SMB-vs-enterprise axis. Multi-attribute path via `audit_fairness_multi`. Pure diagnostic — does not modify predictions.
+- `pinkmate/ml/production_hardening.py` (~310 lines) — `ProductionHardeningPipeline` composes the three layers behind a single API. Factory `from_models_dir` handles first-run-on-fresh-clone graceful degradation. Preserves Slice 3 cross-process replay fidelity (deterministic given fixed calibration data + seed, asserted in `test_replay_fidelity_conformal_is_deterministic`).
+- `docs/SLICE_7_5_DIAGRAM.md` — ASCII control-flow diagram + Mermaid sibling diagram positioning the hardening trio alongside the σ_* measurement trio.
+- 81 new tests across 4 files (25 + 25 + 17 + 14), pytest total 359 → 440.
+
+### Changed
+- `pinkmate/state.py` — `LEADINPUT_SCHEMA_VERSION`: `slice52_rfm_icp_v1` → `slice75_production_hardening_v1`; `LeadInput.protected_attributes: Dict[str, Any]` (default empty) added; `ScoreOutput.conformal_lower / conformal_upper` (0-100 scale) + `ScoreOutput.drift_flags: List[str]` added.
+- `agents/scoring_agent.py` — `_load_models` now also loads `models/<dataset>/calibration.npz` if present; `__init__` builds the `ProductionHardeningPipeline` when calibration available; `_predict_proba_real` stores conformal interval on `self._last_conformal`; `__call__` attaches conformal bounds to `state.score` in 0-100 scale. Placeholder mode and missing-calibration paths both degrade gracefully to current Slice 5.2 behaviour.
+- `pinkmate/ml/pipeline.py`, `scripts/train_gtm_ensemble.py`, `scripts/train_xeducation_ensemble.py` — all 3 training-script `save()` methods now write `models/<dataset>/calibration.npz` holding `X_calibration`, `y_calibration`, and `feature_names` (the held-out 20% test split from `preprocess()`). The two GTM scripts also gained a `split: Optional[PreprocessedSplit]` field on their artefacts dataclass so the held-out split carries through to `save()`.
+- `docs/architecture.md` — new top-level §8 "Production hardening + PRA SS1/23 alignment" with 7 subsections including regulatory mapping table. Existing §8/§9/§10 renumbered to §9/§10/§11. Architecture range updated to `(§1-11)`.
+
+### Dependencies
+- `mapie>=1.0.0` (conformal prediction; MAPIE 0.x `alpha` API not supported — 0.x → 1.x was breaking)
+- `fairlearn>=0.10.0` (fairness metrics)
+
+### Decisions locked (23 Nov 2026)
+- A: MAPIE pin tightened from `>=0.8.0` to `>=1.0.0` (0.8 → 1.0 was a breaking API change; module uses the 1.x `confidence_level` API).
+- B: Pure numpy/scipy for PSI + KL + KS (no alibi-detect dependency).
+- C: Fairlearn `>=0.10.0` (installed 0.15.0+).
+- D: α = 0.10 (90% empirical coverage, industry standard for lead-scoring confidence intervals).
+- E: PSI thresholds 0.10 warn / 0.25 alert (PRA SS1/23 credit-risk convention).
+
+### Meta-choices
+- Positioning: PinkMate stays "AI-native B2B GTM engine with institutional-grade governance built-in" as primary; PRA SS1/23 + FS2/24 are proof-point axes, not primary positioning. Separate cyber-AI finance product (SS3/19 climate financial risk, built on DCarbon + ESG work + imbalance-aware paper + "Auditable Climate Risk Intelligence from Fragmented ESG Data" paper) is where primary BoE positioning lives.
+- Fairness default: `employee_band` as primary audit attribute; schema supports arbitrary additional attributes via `LeadInput.protected_attributes`.
+
+### Regulatory alignment (added to `docs/architecture.md` §8.6)
+- PRA SS1/23 Principle 3 (conservatism-in-use) → conservative commit rule `lower_bound ≥ θ`.
+- PRA SS1/23 Principle 4 (independent validation) → fairness diagnostics as independent signal.
+- PRA SS1/23 Principle 5 (ongoing monitoring) → PSI + KL + KS drift sentinels on every feature.
+- FS2/24 (FCA/BoE/PRA joint agentic AI explainability) → σ_SHAP (Slice 2) + σ_calibration (Slice 5.3) + σ_SHAP_hazard (Slice 6).
+- EU AI Act Article 10 (data governance) → `LeadInput.protected_attributes` schema + fairness audit.
 
 ---
 

@@ -208,6 +208,14 @@ class SliceTwoArtefacts:
         with open(models_dir / "attribution.json", "w") as f:
             json.dump(attribution_payload, f, indent=2)
 
+        # Slice 7.5 — persist held-out test split as conformal calibration set
+        np.savez(
+            models_dir / "calibration.npz",
+            X_calibration=self.split.X_test,
+            y_calibration=self.split.y_test,
+            feature_names=np.array(self.split.feature_names, dtype=object),
+        )
+
         LOGGER.info("Saved Slice 2 artefacts to %s", models_dir)
 
 
