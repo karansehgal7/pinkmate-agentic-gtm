@@ -219,6 +219,7 @@ PinkMate's GTM engine is modelled as a set of independent but coordinated agents
   - Applies the six-model classical ML ensemble (LR / RF / AdaBoost / XGBoost / LightGBM / CatBoost) via a hybrid fail-fast schema contract (Slice 5.2).
   - Produces a probability of conversion with per-model breakdown.
   - Post-Slice-7: theoretically grounded by `pinkmate/qmdp_formal.py` POMDP formalism and Q-MDP commit rule (Littman, Cassandra & Kaelbling 1995).
+  - Post-Slice-7.5: loads `models/<dataset>/calibration.npz` + builds `ProductionHardeningPipeline` at `__init__`; attaches conformal interval `(lower, upper)` and drift flags to every scored lead; exposes `audit_batch_fairness` for batch-mode Fairlearn demographic-parity + equalized-odds reporting. Conservative commit rule `lower_bound ≥ θ` strengthens the Slice 1 governance primitive under PRA SS1/23 Principle 3.
 
 - **SegmentationAgent**
   - Converts scores into tiers (Tier 1 / Tier 2 / Nurture).
@@ -243,12 +244,15 @@ The `ScoringAgent` class in `agents/scoring_agent.py` defines the interface cont
 Core responsibilities:
 
 - Load trained classical ML models from `models/gtm/` (default) or an explicit `models_dir`.
+- Post-Slice-7.5: also load `models/<dataset>/calibration.npz` (written by every training script alongside `attribution.json`) to seed the split-conformal wrapper.
 - Accept a dictionary of engineered features (now including RFM + Clay ICP features from Slice 5.2).
 - Apply the Slice 5.2 hybrid fail-fast schema contract: STRICT on required training features, LENIENT on extras, WARN on `LEADINPUT_SCHEMA_VERSION` drift.
-- Combine model outputs into a final score with per-model breakdown.
-- Return a structured response with `final_score` (0–100) and per-model `model_scores`.
+- Combine model outputs into a final score with per-model breakdown; post-Slice-7.5 the `ProductionHardeningPipeline` also attaches a conformal `(lower, upper)` interval and per-feature drift flags.
+- Return a structured response with `final_score` (0–100), per-model `model_scores`, plus post-Slice-7.5 `conformal_lower / conformal_upper` (0–100 scale) and `drift_flags: List[str]`.
 
 Slice 3.5 added the `model_source="zoo"|"placeholder"` constructor flag so the ScoringAgent can be instantiated for product-demo contexts (website, pitch decks) without loading real models or emitting fallback warnings.
+
+Slice 7.5 added the `ProductionHardeningPipeline` composition — instantiated once at `__init__` when the model ensemble + `calibration.npz` are both available, degrading gracefully to `hardening=None` otherwise (first-run-fresh-clone or placeholder mode). Carries three complementary signals into every scored lead: (1) conformal interval via MAPIE `SplitConformalRegressor`, (2) per-feature PSI drift flags against the training-time snapshot, (3) batch-mode Fairlearn fairness audit across `LeadInput.protected_attributes`. Preserves Slice 3 cross-process replay fidelity — deterministic given fixed calibration data + seed.
 
 ---
 
