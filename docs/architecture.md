@@ -278,123 +278,286 @@ This matches Slice 2's framing — the paper validates the framework on Taiwan B
 
 ---
 
-## 7. Probabilistic framework formalisation (Slice 7)
+## 5e. Slice 5.1 — Cross-domain validation evidence base
 
-Shipped 18 November 2026.
+Shipped 16 November 2026 (commits `5cde402` + `a3d3606`).
 
-### 7.1 Why a top-level section (not sub-slice under Section 5 or 6)
+### 4-point validation table
 
-Slice 7 is a **theoretical scaffolding slice**, not evidence or survival
-extension. It formalises the mathematical objects that Slices 1-6
-operationalised and makes them cite-able in the paper's Theoretical
-Foundations rewrite. Per the methodological-jump pattern established for
-Slice 6: fresh theoretical scaffolding → new top-level section. Existing
-§7 / §8 / §9 renumber to §8 / §9 / §10 to make room.
+| Dataset | Minority rate | Domain | Source | smote_direction | model_stability_ordering |
+|---|---|---|---|---|---|
+| Taiwan Bankruptcy | 3.23% | Financial distress | Real (UCI) | PASS (paper §VI.C) | PASS (paper §VI.C) |
+| LeadForge advanced | 7.86% | B2B GTM synthetic (harder) | Synthetic (HF) | PASS (Δ+0.0155) | PASS (LGB 0.0200 < XGB 0.0251) |
+| LeadForge intermediate | 20.98% | B2B GTM synthetic | Synthetic (HF) | PASS (Δ+0.0108) | PASS (LGB 0.0147 < XGB 0.0189) |
+| X Education | 38.54% | EdTech lead scoring | **REAL** (Zenodo CC BY 4.0) | PASS (Δ+0.0004) | PASS (LGB 0.0098 < XGB 0.0115) |
 
-### 7.2 POMDP formal mapping (Littman, Cassandra & Kaelbling 1995)
+### Monotone SMOTE-Δ decrease trend
 
-`pinkmate/qmdp_formal.py` provides the canonical POMDP tuple
-`(S, A, T, O, R, γ)`, the Bayesian belief filter (predictive step + 
-observation step + normalisation), and the Q-MDP commit rule
-`π_QMDP(b) = argmax_a Σ_s b(s) · Q_MDP(s, a)`.
+The SMOTE-direction effect size on XGBoost σ_SHAP **monotonically decreases**
+as class balance approaches 50%: Δ=+0.0155 at 7.86% minority → +0.0108 at
+20.98% → +0.0004 at 38.54%. This is exactly what the methodological
+definition predicts — SMOTE has less synthetic-positive headroom to
+destabilise attribution as classes near balance. The nuance is empirically
+visible across 4 validation points, materially strengthening the paper's
+cross-domain generalisability claim.
 
-The module proves two isomorphisms via `tests/test_qmdp_formal.py`:
+Full canonical verdicts record: [`SLICE_5_1_VERDICTS.md`](../SLICE_5_1_VERDICTS.md).
 
-1. `pinkmate/qmdp.py::SuperposedBelief` (dict representation) IS a POMDP
-   belief distribution (ndarray representation). The adapter
-   `pinkmate_superposed_belief_as_pomdp_belief()` is a shape conversion,
-   not a mathematical change.
-2. `SuperposedBelief.governance_commit(θ)` IS a degenerate Q-MDP commit
-   over `A' = {commit, defer}` where `Q_MDP(s, commit) âˆ ðŸ™[max_s b(s) ≥ θ]`.
+### Honesty bar
 
-This isomorphism is the formal justification for citing Littman et al. 1995
-in the paper's Theoretical Foundations section.
-
-### 7.3 Hidden Markov Model (Rabiner 1989)
-
-`pinkmate/ml/hmm_belief.py` wraps `hmmlearn.CategoricalHMM` with a
-PinkMate-flavoured API: latent states `{MQL, SQL, ClosedWon}`, discretised
-touch-count observations, Viterbi decoding, forward-backward smoothing,
-Baum-Welch re-estimation.
-
-An HMM is a POMDP with `|A| = 1` and `R ≡ 0` — the agent has no choice,
-only observes the latent-state trajectory. This reduction is useful for
-batch post-hoc analytics on historical touch sequences, complementing the
-live governance loop (which does have actions and uses the full POMDP).
-
-Default parameters encode PinkMate's prior: slow left-to-right transition
-(`p_self = 0.7`, `p_forward = 0.3`) with absorbing final state;
-emission matrix biases higher states to emit more touches on average.
-Overridable via Baum-Welch EM re-estimation (`LatentStateHMM.fit()`) once
-real touch-sequence data accumulates.
-
-### 7.4 Bayesian Weibull survival (Gelman et al. 2013)
-
-`pinkmate/ml/bayesian_survival.py` adds posterior inference on the Slice 6
-Weibull AFT parameters via PyMC 5.x+ NUTS sampling. Priors:
-`shape ~ HalfNormal(2.0)`, `scale ~ HalfNormal(2 · max t)`. Likelihood
-hand-rolled with right-censoring: `log pdf` for events, `log S(t)` for
-censored observations, summed via `pm.Potential`.
-
-Primary output: posterior-predictive 95% credible intervals on
-`S(t) = P(T > t)` at caller-specified times. This is **stronger than
-Slice 6's point-estimate Weibull AFT** because it quantifies parameter
-uncertainty — for regulatory evidence lines, "P(convert by day 30) is
-0.42 with 95% CI [0.35, 0.49]" is more defensible than a single point.
-
-Diagnostics: R-hat (Gelman-Rubin) and ESS (Effective Sample Size) via
-arviz, surfaced on the result dataclass.
-
-### 7.5 Weibull mixture for latent buyer regimes (McLachlan & Peel 2000)
-
-`pinkmate/ml/mixture_survival.py` fits a `K`-component Weibull mixture
-to right-censored survival data via the EM algorithm. Each component
-corresponds to a latent buyer regime — typically a fast-converter regime
-(low scale, high shape) and a slow-converter regime (high scale, moderate
-shape) at K=2.
-
-E-step uses responsibilities with right-censoring contributions. M-step
-uses weighted MLE via Nelder-Mead (scipy.optimize) on the weighted
-log-likelihood. Convergence: `|ΔL| < 10^{-5}` or 200 iterations.
-
-**Decision C (17 Nov 2026):** K selected by BIC sweep across K ∈ {2, 3, 4}
-via `select_k_by_bic`. Not committed to K=2 upfront (avoids overfitting
-the "fast vs slow converters" narrative); not non-parametric (Dirichlet
-Process would be Slice 8+ complexity).
-
-### 7.6 Four locked decisions
-
-| Decision | Choice | Rationale |
-|---|---|---|
-| A: Bayesian engine | PyMC ≥5.0 (not NumPyro) | Maturity + Windows compatibility; NumPyro migration can be Slice 8+ if speed becomes bottleneck |
-| B: MCMC sampler | NUTS (PyMC default) | Standard in Bayesian survival; R-hat + ESS diagnostics well-understood; Variational ADVI sacrifices exactness we don't need |
-| C: Mixture K | BIC sweep K ∈ {2, 3, 4} | Not upfront commitment to K=2; not Dirichlet Process overkill |
-| D: HMM library | hmmlearn ≥0.3, 3 states | hmmlearn maturity + sklearn-style API; 3 states matches paper's belief-state terminology |
-
-### 7.7 What Slice 7 does NOT do
-
-- **Does not change the production governance path.** `ScoringAgent` and
-  `workflows/pipeline.py` continue to use the Slice 1 `pinkmate/qmdp.py`
-  primitives. Slice 7 is formal grounding, not a replacement.
-- **Does not retrain Slice 6 survival models.** Bayesian Weibull and
-  Weibull mixture are additional estimators alongside the Slice 6
-  ensemble, not substitutes.
-- **Does not rewrite the paper's Section III.A.** That's queued as part of
-  the coordinated paper revisions pass. The module code and
-  `docs/probabilistic_framework.md` are the SOURCE MATERIAL for the paper
-  rewrite; the rewrite itself is a separate deliverable.
-
-For the one-stop theoretical reference with full math derivations, see
-`docs/probabilistic_framework.md`.
-
-
-## 8. Slice roadmap                              (was ## 6)
-       ## 9. Running the pipeline                       (was ## 7)
-       ## 10. Citing                                     (was ## 8)
--->
+The σ_SHAP numbers and PNG charts committed under `docs/figures/xeducation/`
+and `docs/gtm_advanced/figures/gtm/` are the output of applying the Q-MDP
+σ_SHAP governance harness to real EdTech B2B lead-scoring data and to
+harder-conditions synthetic B2B GTM data. They DO NOT constitute
+performance claims about PinkMate on real target-industry B2B GTM leads.
+Real-data validation on a target-industry corpus remains deferred to
+later data-gated work (pink-mate.co.uk landing-page capture over 6-12
+months, academic partnership via Kent Business School / Khawar network,
+specific industry engagement).
 
 ---
 
+## 5f. Slice 5.2 — Deployment-schema alignment + MTA formalism
+
+Shipped <date> 2026.
+
+### 5f.1 — ScoringAgent hybrid fail-fast schema contract
+
+**Decision A** (16 Nov 2026) locked a hybrid contract between training-time
+schema and deployment-time `LeadInput`:
+
+- **STRICT on required features** — if a feature the model was trained on
+  is missing from the deployment feature dict, `_predict_proba_real()`
+  raises `RuntimeError` with a message pointing at EnrichmentAgent
+  population or a retrain.
+- **LENIENT on extras** — features present in `LeadInput` but not in the
+  training schema are silently dropped (DEBUG-logged only).
+- **DRIFT WARNING** — if `LEADINPUT_SCHEMA_VERSION` in `pinkmate/state.py`
+  has moved on since the model was trained, a `WARNING` is logged and
+  the drift is recorded for audit. Prediction still proceeds with the
+  intersection of features (no hard failure on version mismatch — the
+  model's existing feature set is still usable).
+
+This replaces the Slice 2 silent zero-fill behaviour that was identified
+as a deployment risk during Slice 5 integration. Zero-fill is a quiet
+failure mode: the model runs on a feature vector it wasn't trained on,
+producing nominally valid but semantically wrong predictions. The hybrid
+contract fails loudly on real misalignment while remaining forgiving
+toward forward-compatible schema evolution.
+
+### 5f.2 — RFM feature-engineering layer
+
+**Decision B** (16 Nov 2026) locked pure-function implementation in
+`pinkmate/ml/feature_engineering.py` — minimal machinery, maximum
+testability, no configuration object required.
+
+| Score | Source LeadInput field | Function | Range |
+|---|---|---|---|
+| Recency | `days_since_last_touch` | Linear decay | 1.0 at 0 days → 0.0 at 90 days |
+| Frequency | `touch_count` | `log1p(count) / log1p(20)` | 0.0 at 0 touches → 1.0 at ≥20 touches |
+| Monetary | `opportunity_estimated_acv` | Step function over USD bands | 0.1 (<10k) → 0.3 (10-50k) → 0.5 (50-200k) → 0.75 (200k-1M) → 1.0 (>1M) |
+| Composite | derived | Weighted average (default equal thirds) | [0, 1] |
+
+All functions return 0.0 on `None` or invalid input. Weights on the
+composite are configurable per-call; defaults are symmetric.
+
+### 5f.3 — Clay-style ICP scoring layer
+
+**Decision C** (16 Nov 2026) locked **BOTH rule-based binary features
+AND composite score + tier** — interpretability wins, model
+regularisation handles whichever is less useful at inference time.
+
+Five rules (from `AazanM/clay-hubspot-enrichment` reference, Phase 2
+research finding):
+
+| Rule | Points | Match criterion |
+|---|---|---|
+| Employees band match | 30 | `employee_band` ∈ {"50-199", "200-999"} |
+| Industry match | 25 | `industry.lower()` ∈ {"manufacturing", "logistics", "professional_services"} |
+| Seniority match | 25 | `seniority.lower()` ∈ {"director", "vp", "c_suite"} |
+| Country match | 10 | `country` ∈ {"US", "UK"} |
+| Non-free-mail | 10 | Email domain NOT in {"gmail.com", "yahoo.com", ...} |
+
+Composite = sum of matched rule-points (0-100). Tier mapping: ≥80 → A,
+≥60 → B, ≥40 → C, <40 → D.
+
+**Known limitations** (documented in `pinkmate/ml/feature_engineering.py`
+module docstring, not blocking):
+
+- Western-SaaS-biased defaults for employee bands, industries, countries
+- Free-mail domain list lacks APAC providers (rediffmail.com, qq.com,
+  163.com, naver.com)
+- Monetary band step function; smooth log-linear alternative is a
+  straightforward swap
+
+Parameterise `ICP_TARGET_*` + `ICP_FREE_MAIL_DOMAINS` per deployment ICP.
+
+### 5f.4 — MTA (Multi-Touch Attribution) formalism
+
+**Decision D** (16 Nov 2026) locked **MEDIUM depth** — section with
+notation, no full proof. Full proof of equivalence deferred to Slice 7
+probabilistic framework formalisation (POMDP + Bayesian + mixture + HMM
+bundled slice).
+
+#### Isomorphism statement
+
+Q-MDP's belief-state transitions over the discrete state space
+S = {MQL, SQL, Closed_Won} implement a Markov chain that is **isomorphic
+to the data-driven Multi-Touch Attribution (MTA) model** (Shao & Li,
+2011).
+
+#### Notation
+
+Let `s_t ∈ S` be the lead's latent qualification state at step `t`,
+`a_t` the action taken by the pipeline (score / govern / outreach), and
+`o_t` the observation vector (touches, engagement signals derived from
+EnrichmentAgent + RFM + ICP features).
+
+The Q-MDP belief update (§III.A):
+
+```
+b_{t+1}(s') = η · P(o_{t+1} | s', a_t) · Σ_{s ∈ S} P(s' | s, a_t) · b_t(s)
+```
+
+is isomorphic to the MTA attribution-weight update on the same state
+space S when `P(s' | s, a_t)` is the data-driven transition matrix
+estimated from touch sequences in the corpus.
+
+The composite `governance_commit(belief, θ)` rule (paper §III.A)
+formalises a commit threshold on MTA-derived state posteriors —
+equivalent to the standard MTA "credit allocation" decision at the
+final state Closed_Won.
+
+**Formal proof of equivalence is deferred to Slice 7.** This section
+establishes the isomorphism statement for the current build so
+downstream work can build on the MTA framing; Slice 7 provides the full
+POMDP formalisation including the measurement model
+`P(o_t | s_t, a_{t-1})` and the resulting belief-update derivation.
+
+#### Reference
+
+Shao, X., & Li, L. (2011). *Data-driven multi-touch attribution models.*
+In Proceedings of the 17th ACM SIGKDD International Conference on
+Knowledge Discovery and Data Mining (KDD '11), pp. 258–264.
+
+### 5f.5 — LeadInput schema version tagging
+
+`pinkmate/state.py` now exports `LEADINPUT_SCHEMA_VERSION =
+"slice52_rfm_icp_v1"`. The ScoringAgent compares this against the version
+persisted in `models/gtm/attribution.json`'s `leadinput_schema_version`
+key when a model was trained. Mismatch → WARNING, not failure.
+
+This versioning policy will be extended by Slice 6 (survival-time fields
+bump to `slice6_survival_v1`), Slice 7 (probabilistic framework fields
+bump to `slice7_probabilistic_v1`), and so on. Downstream tooling can
+detect version drift and recommend retrains without blocking inference.
+## 5g. Slice 5.3 — σ_calibration governance sibling
+
+Shipped <date> 2026.
+
+### 5g.1 Motivation
+
+Paper §V defines σ_SHAP as an **attribution-stability** signal: the standard deviation
+of per-feature mean-absolute SHAP values across K rotated SHAP backgrounds. A low
+σ_SHAP means audit cycles produce consistent attribution rankings; a high σ_SHAP
+flags a model whose attribution flips under perturbation and therefore cannot
+support a governance commit.
+
+σ_calibration is the **calibration-stability** companion: the standard deviation
+of a calibration metric (ECE or Brier) across K bootstrap rotations of the test
+set. A low σ_calibration means predicted probabilities remain reliable under
+audit perturbation; a high σ_calibration flags a model whose probability outputs
+drift between audit cycles even if its attribution rankings are stable.
+
+### 5g.2 Definition
+
+σ_calibration (two parallel metrics, both reported):
+
+```
+σ_ECE   = sqrt( Var_k( ECE_k ) )
+σ_Brier = sqrt( Var_k( Brier_k ) )
+```
+
+where ECE_k and Brier_k are computed on the k-th bootstrap resample of the test
+set, k ∈ {1, …, K}.
+
+Operational protocol (matches paper §V σ_SHAP for direct comparability):
+
+- K = 50 rotations (paper's canonical choice)
+- Seeded bootstrap resampling of the full test set, with replacement
+- ECE binning: 10 equal-width bins on [0, 1]
+- Reproducible: identical seed produces identical σ
+
+### 5g.3 Three required properties (test-enforced)
+
+1. **Bounded**: σ_ECE ∈ [0, 0.5] and σ_Brier ∈ [0, 0.5]. Theoretical cap derived
+   from max sample std of values in [0, 1].
+2. **K-stable**: σ at K=50 close to σ at K=10 on well-behaved synthetic data.
+   K-dependence beyond bootstrap noise would indicate pathological rotation
+   coupling.
+3. **Reproducible**: same seed → identical σ, per-rotation trajectories, and
+   mean metrics.
+
+Enforced by `tests/test_calibration_variance.py` (26 tests total).
+
+### 5g.4 Research question and correlation with σ_SHAP
+
+> Does σ_calibration correlate with σ_SHAP?
+
+Spearman rank correlation + 95% bootstrap CI reported in
+`docs/sigma_calibration_report.md` across all models × all 4 cross-domain
+validation datasets (Taiwan + LeadForge advanced + LeadForge intermediate +
+X Education).
+
+Three possible verdicts:
+
+- **Positive correlation** (CI > 0): σ_calibration is a cheap proxy for σ_SHAP.
+  Useful when SHAP computation is prohibitive; governance commit can be gated
+  on σ_calibration alone.
+- **Negative correlation** (CI < 0): attribution stability and calibration
+  stability measure opposing failure modes. Both must be reported; a model
+  that is attribution-stable but calibration-unstable (or vice versa) exists.
+- **No correlation** (CI contains 0): σ_calibration and σ_SHAP are
+  complementary governance signals. Both must be reported; governance commit
+  requires both to be below their respective thresholds.
+
+Because the correlation is bootstrapped from a modest sample (~16-24 model
+× dataset pairs), the verdict is directional evidence rather than a definitive
+methodological claim. A large-N replication is on the Slice 8+ queue.
+
+### 5g.5 API shape (sibling to attribution.py)
+
+```python
+from pinkmate.ml.calibration_variance import (
+    compute_rotated_calibration_variance,
+    sigma_calibration,
+    sweep_k_stability,
+)
+
+result = compute_rotated_calibration_variance(
+    X_test=X_test,
+    y_test=y_test,
+    predict_proba_fn=model.predict_proba,
+    k_rotations=50,
+    seed=42,
+)
+# result.sigma_ece, result.sigma_brier, result.per_rotation_ece, ...
+```
+
+The signatures mirror `pinkmate.ml.attribution.compute_rotated_shap_variance`
+and `pinkmate.ml.attribution.sigma_shap` to make the sibling-structure explicit
+to anyone reading both modules.
+
+### 5g.6 What Slice 5.3 does NOT claim
+
+σ_calibration is a stability signal, not a calibration-quality claim. A model
+can be well-calibrated (low mean_ECE) and calibration-unstable (high σ_ECE);
+conversely a model can be mis-calibrated and stable. Both mean and σ are
+reported in `sigma_calibration_report.md` so the distinction is explicit.
+
+Correlation with σ_SHAP is reported as evidence, not as a prescription that
+either metric should replace the other. Governance commit in `ScoringAgent`
+remains gated on the full (σ_SHAP, σ_calibration, θ_governance) triple.
 ## 6. Survival analysis extension (Slice 6)
 
 Shipped <date> 2026.
@@ -565,12 +728,6 @@ to make the sibling structure explicit across modules.
        ## 6. Survival analysis extension (Slice 6)
        ## 7. Probabilistic framework formalisation (Slice 7)   <- this new section
        ## 8. Slice roadmap                                     (was ## 7)
-       ## 9. Running the pipeline                              (was ## 8)
-       ## 10. Citing                                           (was ## 9)
--->
-
----
-
 ## 7. Probabilistic framework formalisation (Slice 7)
 
 Shipped 18 November 2026.
@@ -1019,289 +1176,3 @@ If you build on this reference deployment, please cite the paper:
 ```
 <!-- APPEND this block to docs/architecture.md — paste BEFORE Section 8 (Citing). -->
 
----
-
-## 5d. Slice 5.1 — Cross-domain validation evidence base
-
-Shipped 16 November 2026 (commits `5cde402` + `a3d3606`).
-
-### 4-point validation table
-
-| Dataset | Minority rate | Domain | Source | smote_direction | model_stability_ordering |
-|---|---|---|---|---|---|
-| Taiwan Bankruptcy | 3.23% | Financial distress | Real (UCI) | PASS (paper §VI.C) | PASS (paper §VI.C) |
-| LeadForge advanced | 7.86% | B2B GTM synthetic (harder) | Synthetic (HF) | PASS (Δ+0.0155) | PASS (LGB 0.0200 < XGB 0.0251) |
-| LeadForge intermediate | 20.98% | B2B GTM synthetic | Synthetic (HF) | PASS (Δ+0.0108) | PASS (LGB 0.0147 < XGB 0.0189) |
-| X Education | 38.54% | EdTech lead scoring | **REAL** (Zenodo CC BY 4.0) | PASS (Δ+0.0004) | PASS (LGB 0.0098 < XGB 0.0115) |
-
-### Monotone SMOTE-Δ decrease trend
-
-The SMOTE-direction effect size on XGBoost σ_SHAP **monotonically decreases**
-as class balance approaches 50%: Δ=+0.0155 at 7.86% minority → +0.0108 at
-20.98% → +0.0004 at 38.54%. This is exactly what the methodological
-definition predicts — SMOTE has less synthetic-positive headroom to
-destabilise attribution as classes near balance. The nuance is empirically
-visible across 4 validation points, materially strengthening the paper's
-cross-domain generalisability claim.
-
-Full canonical verdicts record: [`SLICE_5_1_VERDICTS.md`](../SLICE_5_1_VERDICTS.md).
-
-### Honesty bar
-
-The σ_SHAP numbers and PNG charts committed under `docs/figures/xeducation/`
-and `docs/gtm_advanced/figures/gtm/` are the output of applying the Q-MDP
-σ_SHAP governance harness to real EdTech B2B lead-scoring data and to
-harder-conditions synthetic B2B GTM data. They DO NOT constitute
-performance claims about PinkMate on real target-industry B2B GTM leads.
-Real-data validation on a target-industry corpus remains deferred to
-later data-gated work (pink-mate.co.uk landing-page capture over 6-12
-months, academic partnership via Kent Business School / Khawar network,
-specific industry engagement).
-
----
-
-## 5e. Slice 5.2 — Deployment-schema alignment + MTA formalism
-
-Shipped <date> 2026.
-
-### 5e.1 — ScoringAgent hybrid fail-fast schema contract
-
-**Decision A** (16 Nov 2026) locked a hybrid contract between training-time
-schema and deployment-time `LeadInput`:
-
-- **STRICT on required features** — if a feature the model was trained on
-  is missing from the deployment feature dict, `_predict_proba_real()`
-  raises `RuntimeError` with a message pointing at EnrichmentAgent
-  population or a retrain.
-- **LENIENT on extras** — features present in `LeadInput` but not in the
-  training schema are silently dropped (DEBUG-logged only).
-- **DRIFT WARNING** — if `LEADINPUT_SCHEMA_VERSION` in `pinkmate/state.py`
-  has moved on since the model was trained, a `WARNING` is logged and
-  the drift is recorded for audit. Prediction still proceeds with the
-  intersection of features (no hard failure on version mismatch — the
-  model's existing feature set is still usable).
-
-This replaces the Slice 2 silent zero-fill behaviour that was identified
-as a deployment risk during Slice 5 integration. Zero-fill is a quiet
-failure mode: the model runs on a feature vector it wasn't trained on,
-producing nominally valid but semantically wrong predictions. The hybrid
-contract fails loudly on real misalignment while remaining forgiving
-toward forward-compatible schema evolution.
-
-### 5e.2 — RFM feature-engineering layer
-
-**Decision B** (16 Nov 2026) locked pure-function implementation in
-`pinkmate/ml/feature_engineering.py` — minimal machinery, maximum
-testability, no configuration object required.
-
-| Score | Source LeadInput field | Function | Range |
-|---|---|---|---|
-| Recency | `days_since_last_touch` | Linear decay | 1.0 at 0 days → 0.0 at 90 days |
-| Frequency | `touch_count` | `log1p(count) / log1p(20)` | 0.0 at 0 touches → 1.0 at ≥20 touches |
-| Monetary | `opportunity_estimated_acv` | Step function over USD bands | 0.1 (<10k) → 0.3 (10-50k) → 0.5 (50-200k) → 0.75 (200k-1M) → 1.0 (>1M) |
-| Composite | derived | Weighted average (default equal thirds) | [0, 1] |
-
-All functions return 0.0 on `None` or invalid input. Weights on the
-composite are configurable per-call; defaults are symmetric.
-
-### 5e.3 — Clay-style ICP scoring layer
-
-**Decision C** (16 Nov 2026) locked **BOTH rule-based binary features
-AND composite score + tier** — interpretability wins, model
-regularisation handles whichever is less useful at inference time.
-
-Five rules (from `AazanM/clay-hubspot-enrichment` reference, Phase 2
-research finding):
-
-| Rule | Points | Match criterion |
-|---|---|---|
-| Employees band match | 30 | `employee_band` ∈ {"50-199", "200-999"} |
-| Industry match | 25 | `industry.lower()` ∈ {"manufacturing", "logistics", "professional_services"} |
-| Seniority match | 25 | `seniority.lower()` ∈ {"director", "vp", "c_suite"} |
-| Country match | 10 | `country` ∈ {"US", "UK"} |
-| Non-free-mail | 10 | Email domain NOT in {"gmail.com", "yahoo.com", ...} |
-
-Composite = sum of matched rule-points (0-100). Tier mapping: ≥80 → A,
-≥60 → B, ≥40 → C, <40 → D.
-
-**Known limitations** (documented in `pinkmate/ml/feature_engineering.py`
-module docstring, not blocking):
-
-- Western-SaaS-biased defaults for employee bands, industries, countries
-- Free-mail domain list lacks APAC providers (rediffmail.com, qq.com,
-  163.com, naver.com)
-- Monetary band step function; smooth log-linear alternative is a
-  straightforward swap
-
-Parameterise `ICP_TARGET_*` + `ICP_FREE_MAIL_DOMAINS` per deployment ICP.
-
-### 5e.4 — MTA (Multi-Touch Attribution) formalism
-
-**Decision D** (16 Nov 2026) locked **MEDIUM depth** — section with
-notation, no full proof. Full proof of equivalence deferred to Slice 7
-probabilistic framework formalisation (POMDP + Bayesian + mixture + HMM
-bundled slice).
-
-#### Isomorphism statement
-
-Q-MDP's belief-state transitions over the discrete state space
-S = {MQL, SQL, Closed_Won} implement a Markov chain that is **isomorphic
-to the data-driven Multi-Touch Attribution (MTA) model** (Shao & Li,
-2011).
-
-#### Notation
-
-Let `s_t ∈ S` be the lead's latent qualification state at step `t`,
-`a_t` the action taken by the pipeline (score / govern / outreach), and
-`o_t` the observation vector (touches, engagement signals derived from
-EnrichmentAgent + RFM + ICP features).
-
-The Q-MDP belief update (§III.A):
-
-```
-b_{t+1}(s') = η · P(o_{t+1} | s', a_t) · Σ_{s ∈ S} P(s' | s, a_t) · b_t(s)
-```
-
-is isomorphic to the MTA attribution-weight update on the same state
-space S when `P(s' | s, a_t)` is the data-driven transition matrix
-estimated from touch sequences in the corpus.
-
-The composite `governance_commit(belief, θ)` rule (paper §III.A)
-formalises a commit threshold on MTA-derived state posteriors —
-equivalent to the standard MTA "credit allocation" decision at the
-final state Closed_Won.
-
-**Formal proof of equivalence is deferred to Slice 7.** This section
-establishes the isomorphism statement for the current build so
-downstream work can build on the MTA framing; Slice 7 provides the full
-POMDP formalisation including the measurement model
-`P(o_t | s_t, a_{t-1})` and the resulting belief-update derivation.
-
-#### Reference
-
-Shao, X., & Li, L. (2011). *Data-driven multi-touch attribution models.*
-In Proceedings of the 17th ACM SIGKDD International Conference on
-Knowledge Discovery and Data Mining (KDD '11), pp. 258–264.
-
-### 5e.5 — LeadInput schema version tagging
-
-`pinkmate/state.py` now exports `LEADINPUT_SCHEMA_VERSION =
-"slice52_rfm_icp_v1"`. The ScoringAgent compares this against the version
-persisted in `models/gtm/attribution.json`'s `leadinput_schema_version`
-key when a model was trained. Mismatch → WARNING, not failure.
-
-This versioning policy will be extended by Slice 6 (survival-time fields
-bump to `slice6_survival_v1`), Slice 7 (probabilistic framework fields
-bump to `slice7_probabilistic_v1`), and so on. Downstream tooling can
-detect version drift and recommend retrains without blocking inference.
-<!-- APPEND this block to docs/architecture.md — paste BEFORE Section 8 (Citing). -->
-
----
-
-## 5g. Slice 5.3 — σ_calibration governance sibling
-
-Shipped <date> 2026.
-
-### 5g.1 Motivation
-
-Paper §V defines σ_SHAP as an **attribution-stability** signal: the standard deviation
-of per-feature mean-absolute SHAP values across K rotated SHAP backgrounds. A low
-σ_SHAP means audit cycles produce consistent attribution rankings; a high σ_SHAP
-flags a model whose attribution flips under perturbation and therefore cannot
-support a governance commit.
-
-σ_calibration is the **calibration-stability** companion: the standard deviation
-of a calibration metric (ECE or Brier) across K bootstrap rotations of the test
-set. A low σ_calibration means predicted probabilities remain reliable under
-audit perturbation; a high σ_calibration flags a model whose probability outputs
-drift between audit cycles even if its attribution rankings are stable.
-
-### 5g.2 Definition
-
-σ_calibration (two parallel metrics, both reported):
-
-```
-σ_ECE   = sqrt( Var_k( ECE_k ) )
-σ_Brier = sqrt( Var_k( Brier_k ) )
-```
-
-where ECE_k and Brier_k are computed on the k-th bootstrap resample of the test
-set, k ∈ {1, …, K}.
-
-Operational protocol (matches paper §V σ_SHAP for direct comparability):
-
-- K = 50 rotations (paper's canonical choice)
-- Seeded bootstrap resampling of the full test set, with replacement
-- ECE binning: 10 equal-width bins on [0, 1]
-- Reproducible: identical seed produces identical σ
-
-### 5g.3 Three required properties (test-enforced)
-
-1. **Bounded**: σ_ECE ∈ [0, 0.5] and σ_Brier ∈ [0, 0.5]. Theoretical cap derived
-   from max sample std of values in [0, 1].
-2. **K-stable**: σ at K=50 close to σ at K=10 on well-behaved synthetic data.
-   K-dependence beyond bootstrap noise would indicate pathological rotation
-   coupling.
-3. **Reproducible**: same seed → identical σ, per-rotation trajectories, and
-   mean metrics.
-
-Enforced by `tests/test_calibration_variance.py` (26 tests total).
-
-### 5g.4 Research question and correlation with σ_SHAP
-
-> Does σ_calibration correlate with σ_SHAP?
-
-Spearman rank correlation + 95% bootstrap CI reported in
-`docs/sigma_calibration_report.md` across all models × all 4 cross-domain
-validation datasets (Taiwan + LeadForge advanced + LeadForge intermediate +
-X Education).
-
-Three possible verdicts:
-
-- **Positive correlation** (CI > 0): σ_calibration is a cheap proxy for σ_SHAP.
-  Useful when SHAP computation is prohibitive; governance commit can be gated
-  on σ_calibration alone.
-- **Negative correlation** (CI < 0): attribution stability and calibration
-  stability measure opposing failure modes. Both must be reported; a model
-  that is attribution-stable but calibration-unstable (or vice versa) exists.
-- **No correlation** (CI contains 0): σ_calibration and σ_SHAP are
-  complementary governance signals. Both must be reported; governance commit
-  requires both to be below their respective thresholds.
-
-Because the correlation is bootstrapped from a modest sample (~16-24 model
-× dataset pairs), the verdict is directional evidence rather than a definitive
-methodological claim. A large-N replication is on the Slice 8+ queue.
-
-### 5g.5 API shape (sibling to attribution.py)
-
-```python
-from pinkmate.ml.calibration_variance import (
-    compute_rotated_calibration_variance,
-    sigma_calibration,
-    sweep_k_stability,
-)
-
-result = compute_rotated_calibration_variance(
-    X_test=X_test,
-    y_test=y_test,
-    predict_proba_fn=model.predict_proba,
-    k_rotations=50,
-    seed=42,
-)
-# result.sigma_ece, result.sigma_brier, result.per_rotation_ece, ...
-```
-
-The signatures mirror `pinkmate.ml.attribution.compute_rotated_shap_variance`
-and `pinkmate.ml.attribution.sigma_shap` to make the sibling-structure explicit
-to anyone reading both modules.
-
-### 5g.6 What Slice 5.3 does NOT claim
-
-σ_calibration is a stability signal, not a calibration-quality claim. A model
-can be well-calibrated (low mean_ECE) and calibration-unstable (high σ_ECE);
-conversely a model can be mis-calibrated and stable. Both mean and σ are
-reported in `sigma_calibration_report.md` so the distinction is explicit.
-
-Correlation with σ_SHAP is reported as evidence, not as a prescription that
-either metric should replace the other. Governance commit in `ScoringAgent`
-remains gated on the full (σ_SHAP, σ_calibration, θ_governance) triple.
