@@ -311,12 +311,17 @@ strengthens the generalisability claim. This new section proposes **§VI.D**
 >    synthetic-intermediate noise profile, producing smaller residuals on
 >    X Education despite its more balanced class distribution.
 >
-> **Positive methodological flip — class balance is the wrong proxy.** These four
-> mechanisms demonstrate that **class balance alone is the wrong proxy for
-> conformal interval width.** The practically useful signal — interval width as a
-> width-tunable governance affordance for PRA SS1/23 Principle 3 — depends on
-> feature informativeness, prediction distribution shape, dataset-generation
-> process, and noise profile, in orthogonal combination. The Slice 7.5 conformal
+> **Positive methodological flip — class balance is the wrong proxy.** The
+> sharper empirical statement these four mechanisms jointly support is:
+> **class imbalance toward majority produces narrower conformal intervals via
+> prediction distribution clustering, which is orthogonal to feature noise levels
+> and to feature informativeness.** This reframes the naive "class balance
+> determines interval width" prediction as a mechanism-composition question —
+> **class balance alone is the wrong proxy for conformal interval width.** The
+> practically useful signal — interval width as a width-tunable governance
+> affordance for PRA SS1/23 Principle 3 — depends on feature informativeness,
+> prediction distribution shape, dataset-generation process, and noise profile,
+> in orthogonal combination. The Slice 7.5 conformal
 > wrapper's α parameter remains the operator's governance dial: tightening α →
 > narrower intervals → higher commit threshold → stricter governance. The
 > four-mechanism framework clarifies what the *baseline* width distribution
